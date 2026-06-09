@@ -1,7 +1,7 @@
 # signa-ml
 
 Módulo de machine learning para reconocimiento de señas del Lenguaje de Señas Argentino (LSA).  
-Parte del ecosistema [Signa](https://github.com/tu-org/signa-mobile).
+Parte del ecosistema [Signa](https://github.com/signasource).
 
 El pipeline toma video de cámara → extrae landmarks con MediaPipe → entrena un clasificador → exporta un archivo `.tflite` que consume la app móvil.
 
