@@ -1,0 +1,55 @@
+# Señas objetivo para el modelo
+# Cada entrada define el ID numérico que usará el clasificador
+# y la carpeta donde se guardan los datos en data/raw/<folder>/
+
+signs:
+  - id: 0
+    label: hola
+    folder: hola
+  - id: 1
+    label: gracias
+    folder: gracias
+  - id: 2
+    label: "si"
+    folder: "si"
+  - id: 3
+    label: "no"
+    folder: "no"
+  - id: 4
+    label: por_favor
+    folder: por_favor
+  - id: 5
+    label: hermanos
+    folder: hermanos
+  - id: 6
+    label: reposo
+    folder: reposo 
+  - id: 7
+    label: casa
+    folder: casa 
+
+# Parámetros de captura
+collection:
+  frames_per_sign: 30       # frames por repetición grabada
+  sequences_per_sign: 20     # repeticiones a grabar por seña
+  camera_index: 0            # 0 = webcam por defecto
+
+# Parámetros de landmarks
+landmarks:
+  use_pose: true             # MediaPipe Holistic: cuerpo completo
+  use_hands: true            # incluye manos (parte del holistic)
+  use_face: false            # descartamos cara por ahora
+  # Dimensiones del vector de features por frame:
+  # pose: 33 puntos x 4 valores (x, y, z, visibility) = 132
+  # left_hand: 21 puntos x 3 valores = 63
+  # right_hand: 21 puntos x 3 valores = 63
+  # total: 258 valores por frame
+
+# Parámetros de entrenamiento (para cuando lleguemos ahí)
+training:
+  sequence_length: 30        # frames por secuencia de entrada
+  test_size: 0.2
+  val_size: 0.1
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.001

@@ -81,3 +81,17 @@ jupyter notebook notebooks/01_mediapipe_exploration.ipynb
 
 Las señas objetivo y sus IDs están en `configs/signs_config.yaml`.  
 Para agregar una seña nueva: agregala al config, grabá al menos 30 repeticiones con `collect_data.py`, y re-corré el pipeline completo.
+
+## Scripts importantes
+
+# procesar key points de señas en tiempo real por cámara
+
+python scripts/collect_data.py --sign seña --sequences 15
+
+# entrenar modelo
+
+python scripts/train.py --model dense --epochs 50   
+
+# predecir en tiempo real
+
+python scripts/predict_realtime.py                    
