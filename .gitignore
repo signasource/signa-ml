@@ -30,3 +30,5 @@ Thumbs.db
 envs/
 conda-meta/
 *.conda
+
+.vscode/settings.json
