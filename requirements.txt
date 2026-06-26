@@ -1,8 +1,6 @@
 mediapipe==0.10.14
 opencv-python-headless
 tensorflow==2.16.1
-
-tensorflow-cpu
 numpy==1.26.4
 pandas
 scikit-learn
@@ -17,6 +15,5 @@ pyyaml
 
 pytest
 python-dotenv
-tflite-runtime
 
 
