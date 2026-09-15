@@ -33,6 +33,7 @@ pip install -r requirements.txt
 
 ```
 data/           Videos e imágenes crudas + landmarks extraídos (no versionado)
+demo/           Escenas web para grabar el video de la demo
 notebooks/      Exploración y experimentos
 scripts/        CLI para grabar datos, extraer landmarks, entrenar, exportar
 src/            Código reutilizable (extractor, modelo, inferencia)
@@ -45,11 +46,20 @@ configs/        Hiperparámetros y lista de señas objetivo
 ## Flujo de trabajo
 
 ```
-1. Grabar señas        →  scripts/collect_data.py
-2. Extraer landmarks   →  scripts/extract_landmarks.py
-3. Entrenar            →  scripts/train.py          (próximamente)
-4. Exportar .tflite    →  scripts/export_tflite.py  (próximamente)
+1. Grabar señas     →  scripts/collect_data.py       (captura y extrae en un paso)
+2. Aumentar         →  scripts/augment_data.py
+3. Entrenar         →  scripts/train.py --model lstm
+4. Calibrar umbral  →  scripts/calibrate_signs.py
+5. Llevar a la app  →  scripts/export_for_app.py
 ```
+
+`collect_data.py` graba y extrae landmarks en la misma pasada, así que no hay
+paso de extracción aparte. `extract_landmarks.py` sigue estando para procesar
+videos que ya estén en `data/raw/`.
+
+La calibración no es opcional: el modelo se usa en modo **verificación** —"¿esto
+es *mama*?"— y cada seña necesita su propio umbral. Uno global deja afuera a las
+señas que reparten probabilidad con una parecida.
 
 Para explorar MediaPipe antes de grabar datos, abrí el notebook:
 
@@ -64,10 +74,99 @@ jupyter notebook notebooks/01_mediapipe_exploration.ipynb
 - [x] Estructura base del repo
 - [x] Exploración de MediaPipe (pose + manos)
 - [x] Captura de datos desde cámara (`collect_data.py`)
-- [x] Extracción de landmarks (`extract_landmarks.py`)
-- [ ] Entrenamiento del clasificador
-- [ ] Exportación a TensorFlow Lite
-- [ ] Integración con signa-mobile
+- [x] Extracción de landmarks (dentro de `collect_data.py`)
+- [x] Entrenamiento del clasificador (señas dinámicas)
+- [x] Exportación a TensorFlow Lite
+- [x] Pipeline de abecedario / señas estáticas
+- [x] Integración con signa-mobile (el .tflite viaja dentro de la app)
+
+---
+
+## Abecedario (señas estáticas)
+
+Pipeline **aparte** del de señas dinámicas. Las señas del abecedario son formas
+de mano fijas, así que en vez de secuencias de 30 frames con pose + manos, se
+clasifica **una sola foto** usando sólo landmarks de mano.
+
+| | señas dinámicas | abecedario |
+|---|---|---|
+| config | `configs/signs_config.yaml` | `configs/alphabet_config.yaml` |
+| detector | MediaPipe Tasks: Pose + Hands | MediaPipe Tasks: Hands |
+| entrada | (30, 258) secuencia | (258,) un frame |
+| features | landmarks crudos normalizados por hombros | ver `src/data/hand_features.py` |
+| modelo | dense / LSTM | MLP |
+| export | `signa_model_vX.tflite` | `signa_alphabet_vX.tflite` |
+
+### Datos
+
+Las fotos van en `data/raw/abc/` (cualquier subcarpeta, se busca recursivo) con
+la convención `LSA_<LETRA>_<FUENTE>.png`:
+
+```
+data/raw/abc/
+├── Fotos/          LSA_A_001.png, LSA_B_001.png, ...
+├── fotos_palo/     LSA_C_005.jpeg, ...
+└── webcam_mateo/   LSA_A_100.png, ...   (generadas por collect_alphabet.py)
+```
+
+`<FUENTE>` es el **id del video del que se sacó el screenshot** (ver el Tracker
+en Drive), no un índice de muestra. Es el dato más importante del nombre: el
+split de entrenamiento agrupa por fuente, así el test set nunca comparte
+señante con el train set.
+
+### Flujo
+
+```bash
+# 0. Levantar las escenas para grabar el video (ver demo/README.md)
+python demo/server.py        # → http://localhost:8000/simple.html
+
+# 1. Extraer landmarks de las fotos (con aumentación a nivel imagen)
+python scripts/build_alphabet_dataset.py
+
+# 2. Entrenar + exportar .tflite
+python scripts/train_alphabet.py --cv        # --cv = validación cruzada por fuente
+
+# 3. Probar en vivo
+python scripts/predict_alphabet_realtime.py
+
+# (opcional pero muy recomendado) sumar fotos propias con tu webcam
+python scripts/collect_alphabet.py --profile mateo
+```
+
+Salidas:
+
+- `models/exports/signa_alphabet_vX.tflite` + `_meta.json` (labels, accuracy, CV)
+- `reports/alphabet_extraction.csv` — una fila por foto, con score y si se
+  detectó la mano
+- `reports/alphabet_report.txt` — precisión por letra y las confusiones más
+  frecuentes
+- `reports/alphabet_confusion.png` — matriz de confusión
+
+### Sobre la accuracy
+
+`train_alphabet.py` reporta por defecto el split **por fuente**: entrena con
+unos videos y testea con otros. Da un número más bajo que un split aleatorio,
+pero es el que predice cómo va a andar frente a una cámara nueva. El split
+`--split random` existe sólo como sanity check y su accuracy está inflada
+(variantes aumentadas de la misma foto caen a los dos lados del split).
+
+El modelo exportado es un **ensemble**: N redes con semillas distintas,
+promediadas dentro de un único `.tflite` (misma interfaz, 258 entradas →
+N_letras salidas). Se controla con `training.ensemble` en el config o
+`--ensemble N`. Con 1 red el modelo pesa ~1,2 MB; con 5, ~6 MB.
+
+### Límites conocidos
+
+Varias letras del LSA se distinguen por **movimiento**, no por la forma de la
+mano. Desde una sola foto son literalmente el mismo handshape y ningún modelo
+estático las puede separar. En los datos actuales el par más afectado es
+**N / Ñ**; le siguen **I / T**, **E / C** y **W / V / U**. `reports/alphabet_report.txt`
+lista las confusiones ordenadas después de cada entrenamiento — conviene mirarlo
+antes de elegir qué letras mostrar en una demo.
+
+En vivo el reconocimiento es mejor que lo que sugiere la accuracy por foto:
+`AlphabetRecognizer` promedia las probabilidades de varios frames, así que
+acumula evidencia en vez de decidir con una sola imagen.
 
 ---
 
