@@ -5,10 +5,11 @@ __pycache__/
 *.pyo
 .env
 
-# Datos (pesados, no van al repo)
-data/raw/
-data/processed/
-data/splits/
+# Datos (pesados, no van al repo). Se ignora el data/ de la raíz entero y no
+# carpeta por carpeta: cada pipeline nuevo agregaba una y el que se olvidaba de
+# sumarla acá se llevaba 150 MB de .npy al commit. La barra inicial importa:
+# sin ella esto también se come src/data/, que es código.
+/data/
 
 # Modelos intermedios
 models/checkpoints/
@@ -16,6 +17,9 @@ models/saved_model/
 
 # El .tflite final SÍ se versiona (o va a GitHub Releases)
 # models/exports/ — no ignorar
+
+# Salidas del pipeline: cachés de probabilidades y reportes de depuración
+/reports/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
@@ -32,3 +36,8 @@ conda-meta/
 *.conda
 
 .vscode/settings.json 
+# Animaciones 3D de la demo: pesan ~61 MB cada una, se bajan de R2
+demo/static/signs/*.glb
+
+# paquete para compartir la demo
+signa-demo.zip
