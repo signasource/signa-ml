@@ -19,14 +19,41 @@ signs:
     label: por_favor
     folder: por_favor
   - id: 5
-    label: hermanos
-    folder: hermanos
+    label: hermano
+    folder: hermano
   - id: 6
     label: reposo
     folder: reposo 
   - id: 7
-    label: casa
-    folder: casa 
+    label: amigo
+    folder: amigo
+  - id: 8
+    label: nombre
+    folder: nombre
+  - id: 9
+    label: estudiar
+    folder: estudiar
+  - id: 10
+    label: entender
+    folder: entender
+  - id: 11
+    label: repetir
+    folder: repetir
+  - id: 12
+    label: gato
+    folder: gato
+  - id: 13
+    label: papa
+    folder: papa
+  - id: 14
+    label: mama
+    folder: mama           
+  - id: 15
+    label: computadora
+    folder: computadora
+  - id: 16
+    label: lengua_de_senas
+    folder: lengua_de_senas
 
 # Parámetros de captura
 collection:

@@ -1,0 +1,16 @@
+{
+  "version": 9,
+  "accuracy": 0.9691,
+  "labels": {
+    "0": "hermano",
+    "1": "reposo",
+    "2": "amigo",
+    "3": "papa",
+    "4": "mama"
+  },
+  "model_name": "signa_lstm",
+  "input_shape": [
+    30,
+    258
+  ]
+}

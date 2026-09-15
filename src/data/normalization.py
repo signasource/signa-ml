@@ -119,3 +119,102 @@ def normalize_dataset(X: np.ndarray) -> np.ndarray:
     assert X.ndim == 3 and X.shape[2] == TOTAL_DIM, \
         f"Shape esperado (N, T, 258), recibido {X.shape}"
     return np.array([normalize_sequence(seq) for seq in X])
+
+
+# ─── La pose, fuera de la entrada del modelo ────────────────────────────────
+
+POSE_BLOCK = 132
+
+
+def drop_pose(X: np.ndarray) -> np.ndarray:
+    """
+    Pone en cero el bloque de pose, dejando sólo las manos.
+
+    Medido sobre el modelo v6: con las manos en cero acertaba el 100% de papá y
+    de hermano, y con la pose en cero caía a 0%. O sea que no clasificaba por la
+    seña sino por la postura de brazos y torso — un atajo perfecto dentro de un
+    dataset de una sola persona en una sola sesión, e inútil en el teléfono,
+    donde la postura es otra. Peor: con las manos abajo el cuerpo igual "parece"
+    algo y el modelo disparaba con confianza.
+
+    La pose se sigue usando ANTES, para normalizar: los hombros son el origen y
+    la escala, así que las manos ya quedan expresadas respecto del cuerpo. Lo
+    que se quita es la postura como evidencia directa.
+    """
+    out = X.copy()
+    out[..., :POSE_BLOCK] = 0.0
+    return out
+
+
+MANOS_DESDE = POSE_BLOCK
+MIN_FRAMES_CON_MANOS = 8
+
+
+def solo_con_manos(seq: np.ndarray) -> np.ndarray | None:
+    """
+    Se queda con los frames donde MediaPipe vio alguna mano y los reestira a
+    los mismos pasos que tenía la secuencia.
+
+    La app dejó de meter cuadros sin manos a la ventana —son 126 ceros donde el
+    modelo espera una seña— así que los clips de entrenamiento tampoco pueden
+    tenerlos: si no, el modelo aprende el patrón de ausencia en vez de la seña.
+    Y era medible: en los clips de "mama" hay manos en apenas el 40% de los
+    frames, contra el 74% de "papa".
+
+    Devuelve None si quedan muy pocos frames útiles: ese clip no describe nada.
+    """
+    con_manos = np.abs(seq[:, MANOS_DESDE:]).sum(axis=1) > 0
+    utiles = seq[con_manos]
+    if len(utiles) < MIN_FRAMES_CON_MANOS:
+        return None
+    if len(utiles) == len(seq):
+        return seq
+
+    origen = np.linspace(0, 1, len(utiles))
+    destino = np.linspace(0, 1, len(seq))
+    return np.stack(
+        [np.interp(destino, origen, utiles[:, c]) for c in range(seq.shape[1])],
+        axis=1,
+    ).astype(seq.dtype)
+
+
+# ─── Encuadre dentro de la ventana ───────────────────────────────────────────
+
+# Cuánto se corre la seña dentro de la ventana, en pasos de la secuencia.
+#
+# Los clips se grabaron encuadrados: los 30 frames son exactamente la seña. La
+# app no tiene ese lujo — su ventana son SIEMPRE los últimos 2,5 s de video, así
+# que la seña entra y sale de a poco, con reposo adelante o atrás. Medido sobre
+# el modelo v8, corriendo la seña 10 pasos (0,83 s) la probabilidad de 'papa'
+# cae de 0.90 a 0.47 y la de 'mama' de 0.80 a 0.28: la mitad de las veces la
+# seña bien hecha no pasa su umbral sólo por dónde cayó la ventana.
+#
+# Entrenar también con la seña corrida es enseñarle el encuadre que va a ver.
+DESPLAZAMIENTOS = (-9, -5, 5, 9)
+
+
+def desplazar(seq, reposo, pasos):
+    """La seña corrida `pasos` dentro de la ventana, rellenando con reposo."""
+    if pasos == 0:
+        return seq.copy()
+    if pasos > 0:
+        return np.concatenate([reposo[-pasos:], seq[:-pasos]])
+    return np.concatenate([seq[-pasos:], reposo[:-pasos]])
+
+
+def con_encuadres(X, y, reposos, rng, pasos=DESPLAZAMIENTOS):
+    """
+    Agrega, por cada secuencia, copias corridas dentro de la ventana.
+
+    `reposos` son secuencias de la clase de reposo, de donde sale el relleno.
+    Sin ellas no se puede rellenar con algo realista y se devuelve todo igual.
+    """
+    if not len(reposos):
+        return X, y
+    extra_x, extra_y = [], []
+    for seq, etiqueta in zip(X, y):
+        for k in pasos:
+            extra_x.append(desplazar(seq, reposos[rng.integers(len(reposos))], k))
+            extra_y.append(etiqueta)
+    return (np.concatenate([X, np.array(extra_x)]),
+            np.concatenate([y, np.array(extra_y)]))
