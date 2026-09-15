@@ -1,0 +1,265 @@
+/* Tokens y animaciones tomados tal cual de los prototipos de Claude Design. */
+
+:root {
+  --bg: #FAF6F2;
+  --ink: #241A16;
+  --muted: #8C817A;
+  --faint: #B0A7A0;
+  --surface: #FFFFFF;
+  --sand: #F2ECE6;
+  --line: #ECE5DE;
+  --violet: #7857FF;
+  --violet-deep: #5E3ED1;
+  --violet-soft: #EEE8FF;
+  --violet-ink: #F5F0FF;
+  --green: #4CA65C;
+  --green-deep: #2E7D45;
+  --green-soft: #E7F5EA;
+  --red: #E14E22;
+  --red-soft: #FBE0D8;
+  --heart: #E03B3B;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #E8E2DC;
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Figtree, system-ui, sans-serif;
+}
+input { font-family: inherit; }
+[hidden] { display: none !important; }
+
+/* Cada pantalla del flujo. El display vive acá y no en el atributo style:
+   así mostrar/ocultar nunca se lleva puesto el layout. */
+.screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.overlay { position: absolute; inset: 0; z-index: 8; }
+
+/* El marco de teléfono: la escena mide 390×844 como en el prototipo. Se escala
+   para entrar en pantalla sin deformarse, así se puede grabar a pantalla
+   completa sin que quede chiquita. */
+#phone {
+  width: 390px;
+  height: 844px;
+  background: var(--bg);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  border-radius: 30px;
+  box-shadow: 0 30px 80px rgba(36, 26, 22, .28);
+  transform-origin: center center;
+}
+
+@keyframes sgPop {
+  0%   { opacity: 0; transform: translateY(14px) scale(.94) }
+  60%  { opacity: 1; transform: translateY(-2px) scale(1.03) }
+  100% { opacity: 1; transform: translateY(0) scale(1) }
+}
+@keyframes sgBreathe {
+  0%, 100% { opacity: .55 }
+  50%      { opacity: 1 }
+}
+@keyframes sgSweep {
+  0%   { transform: translateX(-100%) }
+  100% { transform: translateX(260%) }
+}
+@keyframes sgShake {
+  0%, 100% { transform: translateX(0) }
+  20% { transform: translateX(-6px) }
+  40% { transform: translateX(6px) }
+  60% { transform: translateX(-4px) }
+  80% { transform: translateX(4px) }
+}
+@keyframes sgRise {
+  0%   { opacity: 0; transform: translateY(26px) }
+  100% { opacity: 1; transform: translateY(0) }
+}
+@keyframes sgTrophy {
+  0%   { transform: scale(.5) rotate(-14deg); opacity: 0 }
+  70%  { transform: scale(1.09) rotate(4deg); opacity: 1 }
+  100% { transform: scale(1) rotate(0); opacity: 1 }
+}
+
+/* ── Piezas comunes a las dos escenas ─────────────────────────────────── */
+
+.status-bar {
+  height: 44px; flex: none;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  padding: 0 24px 2px;
+  font: 600 12px/1 Figtree, sans-serif;
+}
+.battery {
+  width: 16px; height: 9px; border: 1.4px solid var(--ink);
+  border-radius: 2.5px; display: block; position: relative;
+}
+.battery::after {
+  content: ""; position: absolute; inset: 1.4px; right: 4px;
+  background: var(--ink); border-radius: 1px;
+}
+
+.head { padding: 10px 20px 0; display: flex; flex-direction: column; gap: 11px; flex: none; }
+.head-row { display: flex; align-items: center; gap: 12px; }
+.back {
+  width: 40px; height: 40px; border-radius: 20px; background: var(--sand);
+  display: flex; align-items: center; justify-content: center; flex: none;
+}
+.progress { flex: 1; height: 9px; border-radius: 99px; background: var(--sand); overflow: hidden; }
+.progress > i {
+  display: block; height: 100%; border-radius: 99px; background: var(--violet);
+  transition: width .5s cubic-bezier(.4, 0, .2, 1);
+}
+.lives { display: flex; align-items: center; gap: 5px; flex: none; }
+.lives > span { font: 700 15px/1 'Bricolage Grotesque', sans-serif; }
+.crumbs { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.crumbs > span {
+  font: 600 11px/1.2 Figtree, sans-serif; letter-spacing: .4px; text-transform: uppercase;
+}
+.crumb-dot { width: 3px; height: 3px; border-radius: 2px; background: #C9BFB7; flex: none; }
+
+.stage { flex: 1; min-height: 0; padding: 18px 20px 0; display: flex; flex-direction: column; gap: 13px; }
+
+/* ── Pantalla de setup ────────────────────────────────────────────────── */
+
+.setup { padding: 22px 22px 22px; gap: 0; }
+.setup h1 {
+  margin: 0 0 5px;
+  font: 700 32px/1.14 'Bricolage Grotesque', sans-serif;
+  letter-spacing: -1.1px; text-wrap: pretty;
+}
+.setup p {
+  margin: 0 0 25px;
+  font: 400 15px/1.55 Figtree, sans-serif; color: var(--muted); text-wrap: pretty;
+}
+.name-field {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 20px;
+  padding: 14px 20px 22px; display: flex; flex-direction: column; gap: 12px;
+}
+.name-field > span {
+  font: 600 10.5px/1 Figtree, sans-serif; letter-spacing: .6px;
+  text-transform: uppercase; color: var(--muted);
+}
+.name-field input {
+  border: 0; outline: 0; background: transparent; width: 100%; padding: 0;
+  font: 800 32px/1.1 'Bricolage Grotesque', sans-serif;
+  letter-spacing: 1.5px; color: var(--ink); text-transform: uppercase;
+}
+.name-field input::placeholder { color: #D6CCC4; }
+.setup-warn {
+  margin-top: 14px;
+  font: 400 13px/1.45 Figtree, sans-serif; color: var(--red);
+}
+/* Empuja el botón al fondo y garantiza aire aunque la pantalla sea corta. */
+.setup .spacer { flex: 1; min-height: 28px; }
+.title {
+  margin: 0; flex: 1; min-width: 0;
+  font: 700 22px/1.22 'Bricolage Grotesque', sans-serif;
+  letter-spacing: -.6px; text-wrap: pretty;
+}
+
+.viewport {
+  flex: 1; min-height: 0; border-radius: 24px; border: 1px solid var(--line);
+  background: var(--sand); position: relative;
+  overflow: hidden;
+  /* El video lleva transform:scaleX(-1) para el efecto espejo, y eso lo
+     promueve a su propia capa de composición. Una capa compuesta ignora el
+     recorte redondeado del padre, así que el rectángulo del video asomaba por
+     fuera del borde: se veía como una línea fina de color debajo de la cámara.
+     isolation + un layer propio en el contenedor fuerzan que el recorte se
+     aplique de verdad. */
+  isolation: isolate;
+  transform: translateZ(0);
+}
+.viewport video,
+.viewport canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  display: block;
+  /* Cinturón y tiradores: además del recorte del padre, cada capa se redondea
+     sola. Si un navegador igual ignora el overflow, no asoma nada. */
+  border-radius: inherit;
+}
+.viewport video {
+  object-fit: cover; transform: scaleX(-1); background: var(--ink);
+}
+.viewport canvas { pointer-events: none; z-index: 2; }
+.cam-fallback {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; z-index: 4;
+  background: repeating-linear-gradient(135deg, #F2ECE6 0 9px, #EBE3DB 9px 18px);
+}
+.cam-fallback > div:first-child {
+  width: 58px; height: 58px; border-radius: 29px; background: rgba(255,255,255,.92);
+  display: flex; align-items: center; justify-content: center;
+}
+.cam-fallback > div:last-child {
+  background: rgba(255,255,255,.92); border-radius: 7px; padding: 4px 9px;
+  font: 500 11.5px/1 ui-monospace, Menlo, monospace; color: var(--muted);
+}
+
+.badge {
+  position: absolute; top: 14px; left: 14px; z-index: 3;
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.94); border-radius: 8px; padding: 5px 10px;
+}
+.badge i {
+  width: 7px; height: 7px; border-radius: 4px; display: block;
+  animation: sgBreathe 1.6s ease-in-out infinite;
+}
+.badge span { font: 600 11.5px/1 Figtree, sans-serif; color: var(--muted); }
+
+.sweep {
+  position: absolute; left: 14px; right: 14px; bottom: 14px; z-index: 3;
+  height: 4px; border-radius: 99px; background: rgba(255,255,255,.35); overflow: hidden;
+}
+.sweep > i {
+  display: block; width: 38%; height: 100%; border-radius: 99px;
+  background: #fff; animation: sgSweep .95s linear infinite;
+}
+
+.result-card {
+  position: absolute; left: 14px; right: 14px; bottom: 14px; z-index: 3;
+  background: rgba(255,255,255,.95); backdrop-filter: blur(8px);
+  border-radius: 18px; padding: 12px 14px;
+  display: flex; align-items: center; gap: 12px;
+  box-shadow: 0 8px 24px rgba(36,26,22,.16);
+}
+
+.foot-hint {
+  flex: none; min-height: 20px; display: flex; align-items: center; justify-content: center;
+}
+.foot-hint span {
+  font: 400 13px/1.4 Figtree, sans-serif; color: var(--faint); text-align: center;
+}
+
+.cta-wrap { flex: none; padding: 8px 20px 14px; }
+.cta {
+  min-height: 58px; border-radius: 18px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  cursor: pointer; user-select: none; transition: background .25s ease;
+}
+.cta:active { transform: scale(.985); }
+.cta span { font: 600 16.5px/1 Figtree, sans-serif; }
+
+.home-bar {
+  position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
+  width: 134px; height: 5px; border-radius: 3px; background: rgba(36,26,22,.22); z-index: 7;
+}
+
+/* Panel de control de la demo (H para ocultar antes de grabar) */
+.help {
+  position: absolute; left: 12px; right: 12px; bottom: 80px; z-index: 6;
+  background: rgba(36,26,22,.92); border-radius: 14px; padding: 11px 14px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.help b {
+  font: 600 10.5px/1 Figtree, sans-serif; letter-spacing: .5px;
+  text-transform: uppercase; color: var(--faint);
+}
+.help span { font: 400 12.5px/1.5 Figtree, sans-serif; color: #FBF6F2; }

@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signa · Deletreá tu nombre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="common.css">
+<script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+<style>
+  /* La barra de captura pasa al borde inferior para no pisar el toggle. */
+  .sweep { left: 0; right: 0; bottom: 0; border-radius: 0; }
+  .result-card { bottom: 56px; }
+
+  /* ── Toggle de trackeo ─────────────────────────────────────────────── */
+  .track-toggle {
+    position: absolute; top: 14px; right: 14px; z-index: 4;
+    display: flex; align-items: center; gap: 9px; cursor: pointer; user-select: none;
+    background: rgba(255,255,255,.94); border-radius: 99px; padding: 6px 8px 6px 11px;
+    border: 0; font-family: inherit;
+  }
+  .track-toggle > span { font: 600 11.5px/1 Figtree, sans-serif; color: var(--muted); }
+  .track-toggle i {
+    width: 30px; height: 18px; border-radius: 99px; background: #DCD2C8;
+    display: block; position: relative; transition: background .22s ease;
+  }
+  .track-toggle i b {
+    position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 99px;
+    background: #fff; box-shadow: 0 1px 3px rgba(36,26,22,.28);
+    transition: transform .22s cubic-bezier(.34,1.3,.5,1);
+  }
+  .track-toggle.on i { background: var(--violet); }
+  .track-toggle.on i b { transform: translateX(12px); }
+  .track-toggle.on > span { color: var(--ink); }
+
+  /* ── Picture-in-picture de la seña ─────────────────────────────────── */
+  .pip {
+    position: absolute; z-index: 5; width: 104px; height: 138px;
+    border-radius: 18px; overflow: hidden; cursor: grab;
+    background: var(--sand); border: 2px solid rgba(255,255,255,.9);
+    box-shadow: 0 10px 28px rgba(36,26,22,.28);
+    touch-action: none; user-select: none;
+    transition: width .3s cubic-bezier(.34,1.2,.5,1), height .3s cubic-bezier(.34,1.2,.5,1),
+                left .34s cubic-bezier(.34,1.3,.5,1), top .34s cubic-bezier(.34,1.3,.5,1),
+                border-radius .3s ease;
+  }
+  .pip.dragging { cursor: grabbing; transition: none; box-shadow: 0 16px 36px rgba(36,26,22,.36); }
+  .pip.big {
+    left: 12px !important; top: 12px !important;
+    width: calc(100% - 24px); height: calc(100% - 24px);
+    border-radius: 22px; cursor: default;
+  }
+  .pip model-viewer { width: 100%; height: 100%; display: block; background: var(--sand); }
+  .pip-ph {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px;
+    background: repeating-linear-gradient(135deg, #F2ECE6 0 9px, #EBE3DB 9px 18px);
+  }
+  .pip-ph em {
+    font: 800 30px/1 'Bricolage Grotesque', sans-serif; font-style: normal; color: var(--violet);
+    background: rgba(255,255,255,.92); border-radius: 12px; width: 46px; height: 46px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .pip-ph small {
+    display: none; background: rgba(255,255,255,.92); border-radius: 6px; padding: 4px 9px;
+    font: 500 11.5px/1 ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap;
+    max-width: 82%; text-align: center;
+  }
+  .pip.big .pip-ph small { display: block; }
+  .pip.big .pip-ph em { width: 76px; height: 76px; border-radius: 20px; font-size: 46px; }
+  .pip-hint {
+    position: absolute; bottom: 7px; left: 7px; right: 7px; z-index: 2;
+    background: rgba(36,26,22,.72); border-radius: 8px; padding: 4px 6px;
+    font: 500 9px/1.25 Figtree, sans-serif; color: #FBF6F2; text-align: center;
+    pointer-events: none;
+  }
+  .pip.big .pip-hint { display: none; }
+  /* Sólo aparece agrandado: ahí el arrastre rota el avatar y hace falta una
+     salida explícita. */
+  .pip-close {
+    position: absolute; top: 8px; right: 8px; z-index: 3; display: none;
+    width: 30px; height: 30px; border-radius: 15px; border: 0; padding: 0; cursor: pointer;
+    background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(36,26,22,.2);
+    align-items: center; justify-content: center;
+  }
+  .pip.big .pip-close { display: flex; }
+
+  .slots { flex: none; display: flex; gap: 8px; justify-content: center; }
+  .slot {
+    height: 64px; border-radius: 16px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .3s cubic-bezier(.34, 1.3, .5, 1);
+  }
+  .slot span { font: 800 26px/1 'Bricolage Grotesque', sans-serif; }
+  .stat {
+    flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 18px;
+    padding: 14px 8px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .stat b { font: 700 20px/1 'Bricolage Grotesque', sans-serif; }
+  .stat span { font: 600 11.5px/1.2 Figtree, sans-serif; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="phone">
+
+  <div class="status-bar"><span>9:41</span><span class="battery"></span></div>
+
+  <div class="head" id="head">
+    <div class="head-row">
+      <div class="back">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#241A16" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+      </div>
+      <div class="progress"><i id="bar" style="width:0%"></i></div>
+      <div class="lives">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="#E03B3B"><path d="M12 21s-7.5-4.7-9.3-9A5.4 5.4 0 0112 5.6 5.4 5.4 0 0121.3 12c-1.8 4.3-9.3 9-9.3 9z"/></svg>
+        <span id="lives">5</span>
+      </div>
+    </div>
+    <div class="crumbs">
+      <span style="color:var(--muted);flex:none">Práctica libre</span>
+      <span class="crumb-dot"></span>
+      <span style="color:var(--ink)">Deletreá tu nombre</span>
+    </div>
+  </div>
+
+  <!-- ── Setup ──────────────────────────────────────────────────────── -->
+  <div id="setup" class="screen setup">
+    <h1>¿Cómo te llamás?</h1>
+    <p>Vas a deletrearlo letra por letra con el alfabeto de la LSA. La cámara reconoce cada una.</p>
+
+    <div class="name-field">
+      <span>Tu nombre</span>
+      <input id="nameInput" value="MATEO" placeholder="Nombre" maxlength="12">
+    </div>
+
+    <div id="setupWarn" class="setup-warn" hidden></div>
+
+    <div class="spacer"></div>
+
+    <div class="cta" id="start" style="background:var(--violet)">
+      <span style="color:var(--violet-ink)">Empezar a deletrear</span>
+    </div>
+  </div>
+
+  <!-- ── Práctica ───────────────────────────────────────────────────── -->
+  <div id="practice" class="screen" hidden>
+    <div class="stage">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex:none">
+        <h1 class="title">Hacé la letra <span id="targetChar" style="color:var(--violet)"></span></h1>
+      </div>
+
+      <div class="viewport">
+        <video id="cam" autoplay muted playsinline></video>
+        <canvas id="landmarks"></canvas>
+
+        <div class="cam-fallback" id="camFallback" hidden>
+          <div><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#241A16" stroke-width="2" stroke-linecap="round"><path d="M22 8.5l-5 3.5 5 3.5v-7z"/><rect x="2" y="6" width="14" height="12" rx="3"/></svg></div>
+          <div>cámara · sin permiso</div>
+        </div>
+
+        <div class="badge">
+          <i id="stateDot" style="background:#8C817A"></i>
+          <span id="stateLabel">Listo · esperando manos</span>
+        </div>
+
+        <button class="track-toggle on" id="trackToggle" type="button" aria-pressed="true">
+          <i><b></b></i>
+        </button>
+
+        <div class="pip" id="pip">
+          <model-viewer id="pipModel" autoplay interaction-prompt="none"
+            camera-orbit="0deg 85deg 100%" min-camera-orbit="auto 60deg auto"
+            max-camera-orbit="auto 110deg auto" shadow-intensity="1" exposure="1"
+            loading="eager"></model-viewer>
+          <div class="pip-ph" id="pipPh">
+            <em id="pipPhChar">A</em>
+            <small id="pipPhNote">avatar 3D · seña</small>
+          </div>
+          <button class="pip-close" id="pipClose" type="button" aria-label="Achicar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#241A16" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+          <div class="pip-hint" id="pipHint">tocá para agrandar</div>
+        </div>
+
+        <div class="sweep" id="sweep" hidden><i></i></div>
+
+        <div class="result-card" id="resultCard" hidden>
+          <div id="resultTint" style="width:52px;height:52px;border-radius:16px;display:flex;align-items:center;justify-content:center;flex:none">
+            <span id="resultChar" style="font:800 26px/1 'Bricolage Grotesque',sans-serif"></span>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div id="resultTitle" style="font:700 15px/1.2 'Bricolage Grotesque',sans-serif"></div>
+            <div id="resultDetail" style="font:400 12.5px/1.35 Figtree,sans-serif;color:var(--ink);margin-top:2px"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="slots" id="slots"></div>
+      <div class="foot-hint"><span id="footHint"></span></div>
+    </div>
+
+    <div class="cta-wrap">
+      <div class="cta" id="cta" style="background:var(--violet)">
+        <span id="ctaLabel" style="color:var(--violet-ink)">Iniciar reconocimiento</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Lección completa ───────────────────────────────────────────── -->
+  <div id="complete" class="screen overlay" style="background:var(--bg);padding-top:52px" hidden>
+    <div style="padding:0 20px;display:flex;justify-content:flex-end">
+      <div class="restart" style="width:40px;height:40px;border-radius:20px;background:var(--sand);display:flex;align-items:center;justify-content:center;cursor:pointer">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#241A16" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </div>
+    </div>
+    <div style="flex:1;padding:0 24px;display:flex;flex-direction:column;align-items:center;gap:14px">
+      <div style="width:108px;height:108px;border-radius:32px;background:var(--violet-soft);display:flex;align-items:center;justify-content:center;margin-top:20px;animation:sgTrophy .6s cubic-bezier(.34,1.4,.5,1) both">
+        <svg width="52" height="52" viewBox="0 0 24 24" fill="#7857FF"><path d="M6 4h12v2h3v3a4 4 0 01-4 4h-.6A6 6 0 0113 15.9V18h3v2H8v-2h3v-2.1A6 6 0 017.6 13H7a4 4 0 01-4-4V6h3V4zm0 4H5v1a2 2 0 002 2V8zm12 0v3a2 2 0 002-2V8h-2z"/></svg>
+      </div>
+      <h1 id="doneTitle" style="margin:4px 0 0;font:700 32px/1.1 'Bricolage Grotesque',sans-serif;letter-spacing:-1.1px;text-align:center"></h1>
+      <p style="margin:0;font:400 15px/1.47 Figtree,sans-serif;color:var(--muted);text-align:center">Deletreo · Alfabeto LSA</p>
+      <div style="display:flex;gap:10px;width:100%;margin-top:8px">
+        <div class="stat">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="#7857FF"><path d="M13 2L4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"/></svg>
+          <b id="xp1"></b><span>XP ganado</span>
+        </div>
+        <div class="stat">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4CA65C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13l4 4 8-9"/><path d="M12 16l2 2 8-9"/></svg>
+          <b id="hits1"></b><span>Aciertos</span>
+        </div>
+        <div class="stat">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="#2FA8A0"><path d="M7 3a1.5 1.5 0 013 0v7h1V2a1.5 1.5 0 013 0v8h1V4a1.5 1.5 0 013 0v9a8 8 0 01-8 8 6 6 0 01-6-6V8a1.5 1.5 0 013 0v3h1V3z"/></svg>
+          <b id="count1"></b><span>Letras nuevas</span>
+        </div>
+      </div>
+    </div>
+    <div style="padding:20px;display:flex;flex-direction:column;gap:10px">
+      <div class="cta restart" style="background:var(--violet)"><span style="color:var(--violet-ink)">Volver a la lección</span></div>
+      <div class="cta restart" style="background:var(--sand)"><span style="color:var(--ink)">Repasar el deletreo</span></div>
+    </div>
+  </div>
+
+  <!-- ── Festejo ────────────────────────────────────────────────────── -->
+  <div id="fiesta" class="screen overlay" style="background:radial-gradient(120% 80% at 50% 12%,#7857FF 0%,#5E3ED1 55%,#3D2790 100%);overflow:hidden" hidden>
+    <canvas id="confetti" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas>
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 26px;position:relative">
+      <div style="font:600 11px/1 Figtree,sans-serif;letter-spacing:1.6px;text-transform:uppercase;color:rgba(245,240,255,.7);animation:sgRise .5s .05s cubic-bezier(.34,1.2,.5,1) both">Nombre reconocido</div>
+      <div id="fiestaSlots" style="display:flex;gap:7px;animation:sgRise .55s .1s cubic-bezier(.34,1.3,.5,1) both"></div>
+      <div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.16);border-radius:99px;padding:9px 18px;animation:sgRise .55s .2s cubic-bezier(.34,1.2,.5,1) both">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#FBBF24"><path d="M13 2L4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"/></svg>
+        <span id="xp2" style="font:700 16px/1 'Bricolage Grotesque',sans-serif;color:#fff"></span>
+        <span style="width:4px;height:4px;border-radius:3px;background:rgba(255,255,255,.5)"></span>
+        <span id="hits2" style="font:600 14px/1 Figtree,sans-serif;color:rgba(255,255,255,.85)"></span>
+      </div>
+      <p style="margin:6px 0 0;font:400 15px/1.5 Figtree,sans-serif;color:rgba(245,240,255,.8);text-align:center;max-width:280px;animation:sgRise .55s .28s cubic-bezier(.34,1.2,.5,1) both">Ya sabés deletrear tu nombre en lengua de señas argentina.</p>
+    </div>
+    <div style="padding:20px;position:relative">
+      <div class="cta restart" style="background:#fff"><span style="color:var(--violet-deep)">Deletrear otro nombre</span></div>
+    </div>
+  </div>
+
+  <div class="help" id="help">
+    <b>Control de demo · H para ocultar</b>
+    <span id="helpText">Cargando modelo…</span>
+  </div>
+
+  <div class="home-bar"></div>
+</div>
+
+<script type="module">
+import { $, show, setText, replay, startCamera, FrameSender, LandmarkRenderer, COLORS, fetchMeta } from "./signa.js";
+
+const params = new URLSearchParams(location.search);
+const CELEBRATION = params.get("celebration") === "fiesta" ? "fiesta" : "lesson";
+
+const state = {
+  stage: "setup",     // setup · practice · complete
+  name: "MATEO",
+  filled: 0,
+  phase: "idle",      // idle · capturing · hit · wrong
+  wrongChar: null,
+  lives: 5,
+  misses: 0,
+  running: false,
+  helpOpen: true,
+};
+
+const video = $("cam");
+const renderer = new LandmarkRenderer($("landmarks"), video);
+let sender = null, meta = null, supported = null;
+let phaseTimer = null, cooldownUntil = 0, confettiRaf = null, parts = null, lastT = 0;
+
+let thresholds = {};
+const letters = () => state.name.split("");
+const targetChar = () => letters()[state.filled] || "";
+
+/* ── Toggle de trackeo ─────────────────────────────────────────────────── */
+
+function renderTrack() {
+  const on = renderer.enabled;
+  $("trackToggle").classList.toggle("on", on);
+  $("trackToggle").setAttribute("aria-pressed", String(on));
+}
+function toggleTrack() { renderer.enabled = !renderer.enabled; renderTrack(); }
+
+/* ── Seña 3D en picture-in-picture ─────────────────────────────────────── */
+
+/*
+ * Mismo criterio que la app (`SignAnimation` + `animationPreload`): se piden
+ * las URLs de todas las letras del nombre de una sola vez al empezar, se
+ * cachean, y cada letra muestra su GLB si lo tiene o un placeholder si no.
+ *
+ * La diferencia con la app: allá el pedido va directo a signa-api desde el
+ * WebView; acá pasa por nuestro servidor, porque signa-api levanta con CORS
+ * deshabilitado y el navegador bloquearía la respuesta. El .glb en sí lo baja
+ * el navegador directo de R2, igual que en la app.
+ */
+const PIP_W = 104, PIP_H = 138, PIP_M = 12;
+
+const pip = $("pip"), pipModel = $("pipModel"), pipPh = $("pipPh");
+const animations = new Map();          // letra → url | null (null = ya se buscó, no hay)
+let animError = null;                  // por qué no hay modelo, si el motivo es global
+let pipBig = false, pipChar = null, pipDrag = null;
+let pipPos = { x: 0, y: 0 };
+
+/* Cuatro anclajes, uno por esquina, esquivando el chrome del viewport: arriba
+   el badge de estado y el toggle, abajo la barra de captura. */
+function pipCorners() {
+  const vp = pip.parentElement;
+  const w = vp.clientWidth, h = vp.clientHeight;
+  const top = 56, bottom = h - PIP_H - 52;
+  return {
+    tl: { x: PIP_M, y: top },
+    tr: { x: w - PIP_W - PIP_M, y: top },
+    bl: { x: PIP_M, y: Math.max(top, bottom) },
+    br: { x: w - PIP_W - PIP_M, y: Math.max(top, bottom) },
+  };
+}
+
+function applyPipPos() {
+  pip.style.left = Math.round(pipPos.x) + "px";
+  pip.style.top = Math.round(pipPos.y) + "px";
+}
+
+function snapToCorner() {
+  const corners = pipCorners();
+  let best = null, bestD = Infinity;
+  for (const c of Object.values(corners)) {
+    const d = Math.hypot(c.x - pipPos.x, c.y - pipPos.y);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (best) { pipPos = { ...best }; applyPipPos(); }
+}
+
+function pipPlaceDefault() {
+  if (!pip.parentElement.clientWidth) return;
+  pipPos = { ...pipCorners().tr };
+  applyPipPos();
+}
+
+function setPipBig(on) {
+  pipBig = on;
+  pip.classList.toggle("big", on);
+  // Agrandado el arrastre rota el avatar, así que le devolvemos los gestos a
+  // model-viewer y ofrecemos una X para salir.
+  pipModel.toggleAttribute("camera-controls", on);
+  if (!on) applyPipPos();
+}
+
+function pipSetChar(ch) {
+  if (ch === pipChar) return;
+  pipChar = ch;
+  setText("pipPhChar", ch || "");
+  const url = animations.get(ch);
+  if (url) {
+    // Ojo: al model-viewer no se lo oculta nunca. `model-viewer` no carga el
+    // modelo mientras el elemento está en display:none (espera a que sea
+    // visible), así que ocultarlo hasta que cargue lo deja esperando para
+    // siempre. Lo que tapa el hueco mientras baja el .glb es el placeholder,
+    // que está encima en el DOM.
+    show(pipPh, true);
+    pipModel.src = url;
+  } else {
+    show(pipPh, true);
+    // Distinguir el motivo importa: "el API no responde" se arregla levantando
+    // algo, "esta letra no tiene modelo" no.
+    setText("pipPhNote",
+      !animations.has(ch) ? "avatar 3D · seña"
+      : animError ? animError
+      : "esta letra no tiene animación");
+  }
+}
+
+/* Teleobjetivo apuntado al torso, igual que GlbAnimationView en la app. */
+const PIP_FOV = 15;      // grados
+const PIP_FRAME = 0.52;  // qué fracción del alto del avatar entra en el cuadro
+
+pipModel.addEventListener("load", () => {
+  show(pipPh, false);
+  try {
+    const dims = pipModel.getDimensions(), center = pipModel.getBoundingBoxCenter();
+    pipModel.fieldOfView = `${PIP_FOV}deg`;
+    pipModel.cameraTarget = `0m ${(center.y + dims.y * 0.30).toFixed(3)}m 0m`;
+    // La distancia se calcula a mano en vez de dejar el "100%" del camera-orbit.
+    // Ese auto-encuadre depende del field-of-view que haya cuando se calcula:
+    // la primera letra se enmarca con los 45° por defecto y queda a 3.30 m,
+    // pero las siguientes ya encuentran los 15° puestos y se van a 10.37 m.
+    // Derivándola del alto del modelo, todas las señas encuadran igual.
+    const radius = (dims.y * PIP_FRAME / 2) / Math.tan(PIP_FOV / 2 * Math.PI / 180);
+    pipModel.cameraOrbit = `0deg 85deg ${radius.toFixed(3)}m`;
+    pipModel.jumpCameraToGoal();   // sin interpolación: no se ve el reacomodo
+  } catch (e) {}
+});
+pipModel.addEventListener("error", () => {
+  show(pipPh, true);
+  setText("pipPhNote", "no se pudo cargar el modelo");
+});
+
+pip.addEventListener("pointerdown", (e) => {
+  if (pipBig) return;                       // agrandado, los gestos son de model-viewer
+  pip.setPointerCapture(e.pointerId);
+  pipDrag = { sx: e.clientX, sy: e.clientY, ox: pipPos.x, oy: pipPos.y, moved: false };
+});
+pip.addEventListener("pointermove", (e) => {
+  if (!pipDrag) return;
+  const dx = e.clientX - pipDrag.sx, dy = e.clientY - pipDrag.sy;
+  if (!pipDrag.moved && Math.hypot(dx, dy) < 6) return;   // tolerancia: un tap tiembla
+  pipDrag.moved = true;
+  pip.classList.add("dragging");
+  show($("pipHint"), false);
+  const vp = pip.parentElement;
+  pipPos.x = Math.max(0, Math.min(vp.clientWidth - PIP_W, pipDrag.ox + dx));
+  pipPos.y = Math.max(0, Math.min(vp.clientHeight - PIP_H, pipDrag.oy + dy));
+  applyPipPos();
+});
+pip.addEventListener("pointerup", () => {
+  if (!pipDrag) return;
+  const moved = pipDrag.moved;
+  pipDrag = null;
+  pip.classList.remove("dragging");
+  if (moved) snapToCorner();               // suelta y se acomoda en la esquina más cercana
+  else setPipBig(true);                    // tap = agrandar
+});
+pip.addEventListener("pointercancel", () => {
+  pipDrag = null; pip.classList.remove("dragging"); snapToCorner();
+});
+$("pipClose").addEventListener("click", (e) => { e.stopPropagation(); setPipBig(false); });
+
+async function preloadAnimations(ls) {
+  const need = [...new Set(ls)].filter((c) => !animations.has(c));
+  if (!need.length) return;
+  try {
+    const res = await fetch(`/sign-animations?letters=${encodeURIComponent(need.join(","))}`);
+    const data = await res.json();
+    // Un fallo deja las letras sin cachear y cada una cae al placeholder, igual
+    // que en la app: nunca rompe la práctica.
+    for (const c of need) animations.set(c, data.animations?.[c]?.url ?? null);
+    animError = data.error
+      ? (data.api ? `sin conexión a ${new URL(data.api).host}` : "sin fuente de modelos")
+      : null;
+    if (data.error) console.info("Animaciones 3D:", data.error);
+  } catch (e) {
+    for (const c of need) animations.set(c, null);
+    animError = "no se pudo consultar el servidor";
+  }
+  pipChar = null;
+  pipSetChar(targetChar());
+}
+
+function syncTarget() {
+  if (sender) sender.target = state.stage === "practice" ? targetChar() : null;
+}
+
+/* ── Render ───────────────────────────────────────────────────────────── */
+
+function renderSlots() {
+  const host = $("slots");
+  const ls = letters();
+  if (host.children.length !== ls.length) {
+    host.innerHTML = "";
+    ls.forEach(() => {
+      const el = document.createElement("div");
+      el.className = "slot";
+      el.innerHTML = "<span></span>";
+      host.appendChild(el);
+    });
+  }
+  const wrong = state.phase === "wrong";
+  ls.forEach((ch, i) => {
+    const done = i < state.filled;
+    const active = i === state.filled;
+    const el = host.children[i];
+    el.style.width = ls.length > 6 ? "40px" : "52px";
+    el.style.transform = active ? "scale(1.06)" : "scale(1)";
+    el.style.background = done ? "#E7F5EA" : active ? (wrong ? "#FBE0D8" : "#FFFFFF") : "#FFFFFF";
+    el.style.border = done ? "2px solid #4CA65C" : active ? (wrong ? "2px solid #E14E22" : "2px solid #7857FF") : "1px dashed #E7E7E9";
+    el.firstElementChild.style.color = done ? "#2E7D45" : active ? (wrong ? "#E14E22" : "#7857FF") : "#D6CCC4";
+    el.firstElementChild.textContent = done || active ? ch : "·";
+  });
+}
+
+function render() {
+  const ls = letters();
+  const total = ls.length;
+  const hit = state.phase === "hit";
+  const wrong = state.phase === "wrong";
+  const capturing = state.phase === "capturing";
+
+  show($("head"), state.stage !== "complete");
+  show($("setup"), state.stage === "setup");
+  show($("practice"), state.stage === "practice");
+  show($("complete"), state.stage === "complete" && CELEBRATION === "lesson");
+  show($("fiesta"), state.stage === "complete" && CELEBRATION === "fiesta");
+
+  $("bar").style.width = Math.round((state.filled / Math.max(total, 1)) * 100) + "%";
+  setText("lives", state.lives);
+  $("lives").style.color = state.lives === 0 ? "var(--heart)" : "var(--ink)";
+
+  if (state.stage === "practice") {
+    setText("targetChar", targetChar());
+
+    $("stateDot").style.background = wrong ? COLORS.wrong : hit ? COLORS.hit : capturing ? COLORS.idle : "#8C817A";
+    setText("stateLabel", !state.running ? "En pausa"
+      : wrong ? "No coincide"
+      : hit ? "Letra confirmada"
+      : capturing ? "Capturando seña"
+      : "Listo · esperando manos");
+
+    show($("sweep"), capturing);
+    show($("resultCard"), hit || wrong);
+
+    if (hit || wrong) {
+      const ch = wrong ? state.wrongChar : ls[Math.max(state.filled - 1, 0)];
+      setText("resultChar", ch);
+      $("resultTint").style.background = wrong ? "var(--red-soft)" : "var(--green-soft)";
+      $("resultChar").style.color = wrong ? "var(--red)" : "var(--green-deep)";
+      $("resultTitle").style.color = wrong ? "var(--red)" : "var(--green-deep)";
+      setText("resultTitle", wrong ? `Detecté «${state.wrongChar}»` : "¡Correcto!");
+      setText("resultDetail", wrong
+        ? `Buscamos la letra ${targetChar()}. Perdiste una vida.`
+        : `Letra ${ch} sumada a ${state.name}.`);
+    }
+
+    setText("footHint", wrong ? "Volvé a intentar la misma letra"
+      : capturing ? "Mantené la seña un segundo"
+      : hit ? "Preparate para la próxima letra"
+      : `Ubicá tu mano y hacé la ${targetChar()}`);
+
+    $("cta").style.background = state.running ? "var(--sand)" : "var(--violet)";
+    $("ctaLabel").style.color = state.running ? "var(--ink)" : "var(--violet-ink)";
+    setText("ctaLabel", state.running ? "Pausar reconocimiento" : "Iniciar reconocimiento");
+
+    renderer.accent = wrong ? COLORS.wrong : hit ? COLORS.hit : COLORS.idle;
+    pipSetChar(targetChar());
+    renderSlots();
+  }
+
+  if (state.stage === "complete") {
+    const xp = total * 5;
+    setText("doneTitle", `¡${state.name} completado!`);
+    setText("xp1", `+${xp}`);
+    setText("hits1", `${total}/${total + state.misses}`);
+    setText("count1", total);
+    setText("xp2", `+${xp} XP`);
+    setText("hits2", `${total}/${total + state.misses} aciertos`);
+    const host = $("fiestaSlots");
+    if (host.children.length !== total) {
+      host.innerHTML = "";
+      ls.forEach((ch) => {
+        const el = document.createElement("div");
+        el.style.cssText = "width:52px;height:66px;border-radius:16px;background:rgba(255,255,255,.14);border:2px solid rgba(255,255,255,.5);display:flex;align-items:center;justify-content:center";
+        el.innerHTML = `<span style="font:800 30px/1 'Bricolage Grotesque',sans-serif;color:#fff">${ch}</span>`;
+        host.appendChild(el);
+      });
+    }
+  }
+}
+
+/* ── Lógica ───────────────────────────────────────────────────────────── */
+
+function attempt(ch) {
+  if (state.stage !== "practice") return;
+  if (performance.now() < cooldownUntil) return;
+
+  clearTimeout(phaseTimer);
+  cooldownUntil = performance.now() + 1800;
+  if (sender) sender.reset();
+
+  if (ch !== targetChar()) {
+    state.wrongChar = ch;
+    state.phase = "wrong";
+    state.misses += 1;
+    state.lives = Math.max(0, state.lives - 1);
+    render();
+    replay($("resultCard"), "sgShake .5s ease both");
+    phaseTimer = setTimeout(() => { state.phase = "idle"; state.wrongChar = null; render(); }, 1600);
+    return;
+  }
+
+  state.filled += 1;
+  state.wrongChar = null;
+  syncTarget();
+  const done = state.filled >= letters().length;
+  state.phase = "hit";
+  render();
+  replay($("resultCard"), "sgPop .42s cubic-bezier(.34,1.4,.5,1) both");
+
+  if (done) {
+    if (sender) sender.stop();
+    state.running = false;
+    phaseTimer = setTimeout(() => { state.stage = "complete"; render(); if (CELEBRATION === "fiesta") confetti(); }, 900);
+  } else {
+    phaseTimer = setTimeout(() => { state.phase = "idle"; render(); }, 1300);
+  }
+}
+
+function onResult(data) {
+  if (data.error) return;
+  renderer.setLandmarks(data.landmarks);
+
+  if (state.phase === "idle" || state.phase === "capturing") {
+    state.phase = data.hand ? "capturing" : "idle";
+    render();
+  }
+
+  // `confirmed` acá significa "sostuvo la letra que le pedimos", no "ganó entre
+  // las 26": el servidor está en modo verificación porque le mandamos target.
+  if (data.confirmed) attempt(targetChar());
+  else if (data.mismatch) attempt(data.letter);
+
+  if (state.helpOpen) {
+    const t = data.target
+      ? `${data.target}: ${Math.round((data.target_confidence || 0) * 100)}%`
+        + ` / umbral ${Math.round((thresholds[data.target] ?? 0.5) * 100)}%${data.target_ok ? " ✓" : ""}`
+      : "";
+    const top = (data.top || []).map((x) => `${x.letter} ${Math.round(x.confidence * 100)}%`).join(" ");
+    setText("helpText", `${t}  ·  ${top || "sin mano"}  ·  ${Math.round(sender.fps)} fps`
+      + " — letra = forzar · espacio = acertar · H ocultar · L landmarks · R reiniciar");
+  }
+}
+
+function toggle() {
+  state.running = !state.running;
+  if (state.running) sender.start(); else sender.stop();
+  render();
+}
+
+function start() {
+  const raw = ($("nameInput").value || "MATEO").toUpperCase().replace(/[^A-ZÑ]/g, "").slice(0, 10) || "MATEO";
+  // Un nombre con letras que el modelo no conoce no se puede completar nunca:
+  // mejor avisarlo acá que descubrirlo grabando.
+  const unknown = supported ? [...new Set(raw.split(""))].filter((c) => !supported.includes(c)) : [];
+  if (unknown.length) {
+    const w = $("setupWarn");
+    w.textContent = `Sin datos para: ${unknown.join(", ")}. El modelo cubre ${supported.join(" ")}.`;
+    show(w, true);
+    return;
+  }
+  show($("setupWarn"), false);
+  Object.assign(state, { name: raw, stage: "practice", filled: 0, phase: "idle", lives: 5, misses: 0, wrongChar: null });
+  syncTarget();
+  render();
+  requestAnimationFrame(pipPlaceDefault);
+  preloadAnimations(raw.split(""));
+  if (!state.running) toggle();
+}
+
+function restart() {
+  clearTimeout(phaseTimer);
+  cancelAnimationFrame(confettiRaf); confettiRaf = null; parts = null;
+  if (sender) { sender.stop(); sender.reset(); }
+  Object.assign(state, { stage: "setup", filled: 0, phase: "idle", lives: 5, misses: 0, wrongChar: null, running: false });
+  cooldownUntil = 0;
+  syncTarget();
+  setPipBig(false);
+  show($("pipHint"), true);
+  render();
+}
+
+/* ── Confeti ──────────────────────────────────────────────────────────── */
+
+const CONFETTI_COLORS = ["#FBBF24", "#29B6E8", "#E86AA6", "#4CA65C", "#FFFFFF", "#E0D5FF"];
+
+function confetti() {
+  const c = $("confetti");
+  const loop = () => {
+    confettiRaf = requestAnimationFrame(loop);
+    const w = c.clientWidth, h = c.clientHeight;
+    if (!w || !h) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (c.width !== Math.round(w * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+    const ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (!parts) {
+      parts = Array.from({ length: 90 }, () => ({
+        x: Math.random() * w, y: -Math.random() * h,
+        vy: 40 + Math.random() * 90, vx: (Math.random() - .5) * 30,
+        s: 4 + Math.random() * 6, r: Math.random() * 6.28, vr: (Math.random() - .5) * 4,
+        c: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+      }));
+      lastT = performance.now();
+    }
+    const now = performance.now();
+    const dt = Math.min((now - lastT) / 1000, .05);
+    lastT = now;
+    parts.forEach((p) => {
+      p.y += p.vy * dt; p.x += p.vx * dt; p.r += p.vr * dt;
+      if (p.y > h + 20) { p.y = -20; p.x = Math.random() * w; }
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r);
+      ctx.fillStyle = p.c; ctx.globalAlpha = .9;
+      ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2);
+      ctx.restore();
+    });
+  };
+  loop();
+}
+
+/* ── Arranque ─────────────────────────────────────────────────────────── */
+
+(async () => {
+  render();
+  renderTrack();
+  try { await startCamera(video); } catch (e) { show($("camFallback"), true); }
+  renderer.start();
+
+  sender = new FrameSender(video, { onResult });
+  meta = await fetchMeta();
+  if (meta) {
+    supported = meta.labels;
+    thresholds = meta.thresholds || {};
+    setText("helpText", `${meta.model} · ${meta.labels.length} letras · modo verificación`
+      + (meta.cv ? ` · CV ${(meta.cv.mean * 100).toFixed(0)}%` : "")
+      + " — H oculta este panel antes de grabar");
+  }
+
+  $("trackToggle").addEventListener("click", toggleTrack);
+  // Si cambia el tamaño del viewport, el anclaje de esquina deja de ser válido.
+  new ResizeObserver(() => { if (!pipBig) snapToCorner(); }).observe(pip.parentElement);
+
+  $("start").addEventListener("click", start);
+  $("cta").addEventListener("click", toggle);
+  document.querySelectorAll(".restart").forEach((el) => el.addEventListener("click", restart));
+
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (e.target.tagName === "INPUT" && k !== "enter") return;
+    if (k === "enter" && state.stage === "setup") { start(); return; }
+    if (k === "h") { state.helpOpen = !state.helpOpen; show($("help"), state.helpOpen); return; }
+    if (k === "l") { toggleTrack(); return; }
+    if (k === "r") { restart(); return; }
+    if (k === " ") { e.preventDefault(); attempt(targetChar()); return; }  // acierto forzado
+    if (state.stage === "practice" && /^[a-zñ]$/.test(k)) attempt(k.toUpperCase());
+  });
+
+  window.SignaRecognizer = { emit: (l) => attempt(String(l).toUpperCase()) };
+})();
+</script>
+</body>
+</html>
