@@ -1,157 +1,264 @@
 """
-Graba secuencias de landmarks para las señas definidas en signs_config.yaml.
+Graba secuencias de landmarks para las señas de signs_config.yaml.
+
+Qué cambió respecto de la versión anterior, y por qué (todo salió de medir la
+app en un teléfono real):
+
+1. Usa los MISMOS detectores que la app —PoseLandmarker + HandLandmarker de
+   MediaPipe Tasks, los .task que viajan dentro del APK— en vez de Holistic.
+   Entrenar con un detector y reconocer con otro se paga entero en producción.
+
+2. Graba por TIEMPO, no por cantidad de frames. Antes eran 30 frames a la
+   velocidad que diera la laptop, así que nadie sabía cuánto duraba un clip. La
+   app toma los últimos 2,5 s y los interpola a 30 pasos; acá se hace igual, así
+   que un paso significa lo mismo de los dos lados.
+
+3. Espeja la imagen (cv2.flip) antes de detectar. NO es cosmético: define el
+   signo de la coordenada x y qué mano llama "izquierda" MediaPipe. El dataset
+   viejo se grabó espejado, así que se mantiene la convención — y la app ahora
+   hace lo mismo.
+
+4. Reparte las manos por cercanía al frame anterior en vez de creerle a la
+   etiqueta de MediaPipe frame a frame, que con movimiento rápido se equivoca.
+
+5. Guarda metadatos al lado de cada clip: quién firmó, fps reales, duración,
+   detector y versión. Sin el nombre del señante no se puede validar agrupando
+   por persona, que es la única medida que dice si el modelo le va a servir a
+   alguien nuevo.
 
 Uso:
-    python scripts/collect_data.py
-    python scripts/collect_data.py --sign hola --sequences 30
-    python scripts/collect_data.py --list   # lista las señas disponibles
+    python scripts/collect_data.py --signante mateo
+    python scripts/collect_data.py --sign mama --sequences 30 --signante ana
+    python scripts/collect_data.py --list
 
 Salida:
-    data/processed/<label>/sequence_<N>.npy
-    Cada .npy es un array de shape (frames_per_sign, 258).
+    data/processed/<label>/sequence_<N>.npy        (30, 258)
+    data/processed/<label>/sequence_<N>.json       metadatos
 """
+from __future__ import annotations
+
 import argparse
+import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-# Aseguramos que src/ esté en el path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data.extractor import get_holistic_model, process_frame
+from src.data.tasks_extractor import (
+    AsignadorDeManos,
+    armar_keypoints,
+    crear_detectores,
+)
 from src.utils.labels import get_signs, load_config
 
-DATA_DIR = Path(__file__).parent.parent / "data" / "processed"
+ROOT = Path(__file__).parent.parent
+DATA_DIR = ROOT / "data" / "processed"
+MODELOS = ROOT.parent / "signa-mobile" / "assets" / "mediapipe"
+
+# Lo que dura la ventana que mira la app, y a cuántos pasos la lleva.
+VENTANA_S = 2.5
+PASOS = 30
+VERSION_CAPTURA = 2
 
 
-def get_existing_sequences(sign_dir: Path) -> int:
-    """Cuenta cuántas secuencias ya están grabadas para una seña."""
+def existentes(sign_dir: Path) -> int:
     return len(list(sign_dir.glob("sequence_*.npy")))
 
 
-def collect_sign(sign: dict, config: dict, camera_index: int):
-    frames_per_sign = config["collection"]["frames_per_sign"]
-    sequences_to_record = config["collection"]["sequences_per_sign"]
+def remuestrear(tiempos: list[float], frames: list[np.ndarray]) -> np.ndarray:
+    """
+    Los frames capturados, repartidos en PASOS instantes equiespaciados.
 
+    Es la misma cuenta que hace la app antes de cada inferencia: así el modelo
+    ve la misma escala temporal al entrenar y al reconocer, sin importar a
+    cuántos fps corra cada lado.
+    """
+    t = np.array(tiempos) - tiempos[0]
+    objetivo = np.linspace(0, t[-1], PASOS)
+    datos = np.array(frames)
+    return np.stack(
+        [np.interp(objetivo, t, datos[:, c]) for c in range(datos.shape[1])], axis=1
+    ).astype(np.float32)
+
+
+def grabar_sena(sign: dict, args, pose_det, manos_det, reloj) -> int:
     sign_dir = DATA_DIR / sign["folder"]
     sign_dir.mkdir(parents=True, exist_ok=True)
 
-    existing = get_existing_sequences(sign_dir)
-    start_seq = existing
-    end_seq = existing + sequences_to_record
+    desde = existentes(sign_dir)
+    hasta = desde + args.sequences
 
-    print(f"\n{'='*50}")
-    print(f"Seña: {sign['label'].upper()}")
-    print(f"Secuencias existentes: {existing}")
-    print(f"Grabando: {sequences_to_record} nuevas (total final: {end_seq})")
-    print(f"Frames por secuencia: {frames_per_sign}")
-    print(f"{'='*50}")
-    print("Presioná Q en cualquier momento para cancelar.\n")
+    print(f"\n{'=' * 56}")
+    print(f"Seña: {sign['label'].upper()}   ·   señante: {args.signante}")
+    print(f"Ya grabadas: {desde}   ·   nuevas: {args.sequences}")
+    print(f"Cada clip dura {VENTANA_S} s y se guarda con {PASOS} pasos.")
+    print(f"{'=' * 56}")
+    print("Q para cancelar.\n")
 
-    cap = cv2.VideoCapture(camera_index)
+    cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
-        print(f"ERROR: No se pudo abrir la cámara (índice {camera_index})")
-        return
+        print(f"ERROR: no se pudo abrir la cámara (índice {args.camera})")
+        return 0
 
-    with get_holistic_model() as holistic:
-        for seq_num in range(start_seq, end_seq):
-            # ---- Pantalla de espera entre secuencias ----
-            for countdown in range(3, 0, -1):
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame = cv2.flip(frame, 1)
-                cv2.putText(
-                    frame,
-                    f"Seña: {sign['label']} | Secuencia {seq_num + 1}/{end_seq}",
-                    (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2,
-                )
-                cv2.putText(
-                    frame, f"Listo en {countdown}...", (15, 70),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 200, 255), 2,
-                )
-                cv2.imshow("Signa - Captura de datos", frame)
-                if cv2.waitKey(1000) & 0xFF == ord("q"):
-                    cap.release()
-                    cv2.destroyAllWindows()
-                    print("Cancelado por el usuario.")
-                    return
+    guardadas = 0
+    for n in range(desde, hasta):
+        # ---- cuenta regresiva ----
+        for queda in range(3, 0, -1):
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame = cv2.flip(frame, 1)
+            cv2.putText(frame, f"{sign['label']}  ({n + 1}/{hasta})", (15, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
+            cv2.putText(frame, f"Empieza en {queda}...", (15, 72),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 180, 255), 2)
+            cv2.imshow("Signa - captura", frame)
+            if cv2.waitKey(1000) & 0xFF == ord("q"):
+                cap.release()
+                cv2.destroyAllWindows()
+                print("Cancelado.")
+                return guardadas
 
-            # ---- Grabación de frames ----
-            sequence = []
-            for frame_num in range(frames_per_sign):
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame = cv2.flip(frame, 1)
-                annotated_frame, results, keypoints = process_frame(frame, holistic)
+        # ---- captura por tiempo ----
+        asignador = AsignadorDeManos()
+        tiempos: list[float] = []
+        frames: list[np.ndarray] = []
+        inicio = time.perf_counter()
 
-                cv2.putText(
-                    annotated_frame,
-                    f"GRABANDO | {sign['label']} | Sec {seq_num + 1}/{end_seq} | Frame {frame_num + 1}/{frames_per_sign}",
-                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2,
-                )
-                cv2.imshow("Signa - Captura de datos", annotated_frame)
-                sequence.append(keypoints)
+        while True:
+            ahora = time.perf_counter()
+            transcurrido = ahora - inicio
+            if transcurrido >= VENTANA_S:
+                break
 
-                if cv2.waitKey(10) & 0xFF == ord("q"):
-                    cap.release()
-                    cv2.destroyAllWindows()
-                    print("Cancelado por el usuario.")
-                    return
+            ok, frame = cap.read()
+            if not ok:
+                break
+            # Espejado ANTES de detectar: define la x y la mano. Ver cabecera.
+            frame = cv2.flip(frame, 1)
 
-            # ---- Guardar secuencia ----
-            if len(sequence) == frames_per_sign:
-                out_path = sign_dir / f"sequence_{seq_num}.npy"
-                np.save(out_path, np.array(sequence))
-                print(f"  ✓ Guardado: {out_path.name}")
-            else:
-                print(f"  ✗ Secuencia incompleta, descartada.")
+            import mediapipe as mp
+
+            imagen = mp.Image(image_format=mp.ImageFormat.SRGB,
+                              data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            ms = next(reloj)
+            pose_res = pose_det.detect_for_video(imagen, ms)
+            manos_res = manos_det.detect_for_video(imagen, ms)
+            izq, der = asignador.asignar(manos_res)
+
+            tiempos.append(transcurrido)
+            frames.append(armar_keypoints(pose_res, izq, der))
+
+            barra = int(40 * transcurrido / VENTANA_S)
+            cv2.putText(frame, f"GRABANDO  {sign['label']}  ({n + 1}/{hasta})", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            cv2.putText(frame, "[" + "#" * barra + "-" * (40 - barra) + "]", (10, 55),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            manos_vistas = (izq is not None) + (der is not None)
+            cv2.putText(frame, f"manos: {manos_vistas}", (10, 85),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 160, 0), 2)
+            cv2.imshow("Signa - captura", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                cap.release()
+                cv2.destroyAllWindows()
+                print("Cancelado.")
+                return guardadas
+
+        # ---- guardar ----
+        if len(frames) < PASOS // 2:
+            print(f"  ✗ clip {n}: sólo {len(frames)} frames en {VENTANA_S}s, se descarta")
+            continue
+
+        secuencia = remuestrear(tiempos, frames)
+        np.save(sign_dir / f"sequence_{n}.npy", secuencia)
+        (sign_dir / f"sequence_{n}.json").write_text(json.dumps({
+            "signante": args.signante,
+            "seña": sign["label"],
+            "fecha": datetime.now().isoformat(timespec="seconds"),
+            "fps_reales": round(len(frames) / VENTANA_S, 1),
+            "frames_capturados": len(frames),
+            "ventana_s": VENTANA_S,
+            "pasos": PASOS,
+            "espejado": True,
+            "detector": "mediapipe-tasks pose+hands",
+            "version_captura": VERSION_CAPTURA,
+        }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        guardadas += 1
+        print(f"  ✓ clip {n}: {len(frames)} frames capturados "
+              f"({len(frames) / VENTANA_S:.0f} fps) → {PASOS} pasos")
 
     cap.release()
     cv2.destroyAllWindows()
-    print(f"\nListo. Secuencias grabadas en: {sign_dir}")
+    return guardadas
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Graba secuencias de landmarks para señas LSA.")
-    parser.add_argument("--sign", type=str, help="Graba solo esta seña (por label, ej: hola)")
-    parser.add_argument("--sequences", type=int, help="Número de secuencias a grabar (override del config)")
-    parser.add_argument("--camera", type=int, default=None, help="Índice de la cámara")
-    parser.add_argument("--list", action="store_true", help="Lista las señas configuradas y sale")
-    args = parser.parse_args()
+def reloj_monotono():
+    """Timestamps crecientes en ms: MediaPipe en modo VIDEO los exige."""
+    t = 0
+    while True:
+        t += 33
+        yield t
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Captura de secuencias de señas.")
+    p.add_argument("--sign", help="Grabar sólo esta seña (por label)")
+    p.add_argument("--sequences", type=int, help="Clips por seña")
+    p.add_argument("--camera", type=int, help="Índice de cámara")
+    p.add_argument("--signante", required=False, default="",
+                   help="Quién firma. Hace falta para validar agrupando por persona")
+    p.add_argument("--models", type=Path, default=MODELOS,
+                   help="Carpeta con pose_landmarker.task y hand_landmarker.task")
+    p.add_argument("--list", action="store_true", help="Lista las señas del config")
+    args = p.parse_args()
 
     config = load_config()
     signs = get_signs()
-    camera_index = args.camera if args.camera is not None else config["collection"]["camera_index"]
 
     if args.list:
-        print("\nSeñas configuradas:")
         for s in signs:
-            sign_dir = DATA_DIR / s["folder"]
-            existing = get_existing_sequences(sign_dir) if sign_dir.exists() else 0
-            print(f"  [{s['id']}] {s['label']:<15} — {existing} secuencias grabadas")
+            d = DATA_DIR / s["folder"]
+            print(f"  {s['label']:<18} {existentes(d) if d.exists() else 0:>3} clips")
         return
 
-    if args.sequences:
-        config["collection"]["sequences_per_sign"] = args.sequences
+    if not args.signante:
+        print("ERROR: falta --signante. Sin saber quién firmó cada clip no se")
+        print("       puede medir si el modelo le sirve a una persona nueva.")
+        sys.exit(1)
+
+    args.sequences = args.sequences or config["collection"]["sequences_per_sign"]
+    args.camera = args.camera if args.camera is not None else config["collection"]["camera_index"]
+
+    faltan = [n for n in ("pose_landmarker.task", "hand_landmarker.task")
+              if not (args.models / n).exists()]
+    if faltan:
+        print(f"ERROR: faltan los modelos {faltan} en {args.models}")
+        sys.exit(1)
 
     if args.sign:
-        target = next((s for s in signs if s["label"] == args.sign), None)
-        if not target:
-            print(f"ERROR: Seña '{args.sign}' no encontrada en el config.")
-            print(f"Señas disponibles: {[s['label'] for s in signs]}")
+        elegida = next((s for s in signs if s["label"] == args.sign), None)
+        if not elegida:
+            print(f"ERROR: la seña '{args.sign}' no está en el config.")
             sys.exit(1)
-        collect_sign(target, config, camera_index)
-    else:
-        print(f"Grabando todas las señas ({len(signs)} en total)...")
-        for sign in signs:
-            collect_sign(sign, config, camera_index)
+        signs = [elegida]
 
-    print("\n✓ Captura finalizada.")
+    pose_det, manos_det = crear_detectores(args.models)
+    reloj = reloj_monotono()
+
+    total = 0
+    for s in signs:
+        total += grabar_sena(s, args, pose_det, manos_det, reloj)
+
+    print(f"\n✓ {total} clips nuevos.")
+    print("  Ojo: son del extractor nuevo (Tasks). Los clips viejos salieron de")
+    print("  Holistic, así que no conviene mezclarlos en un mismo entrenamiento")
+    print("  sin comprobar antes que dan lo mismo.")
 
 
 if __name__ == "__main__":
