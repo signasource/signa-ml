@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signa · Reconocimiento Simple</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="common.css">
+<style>
+  .chips { flex: none; display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    flex: none; display: flex; align-items: center; gap: 6px;
+    min-height: 38px; padding: 0 13px; border-radius: 14px;
+    transition: all .3s ease;
+  }
+  .chip span { font: 600 14px/1 Figtree, sans-serif; }
+</style>
+</head>
+<body>
+
+<div id="phone">
+
+  <div class="status-bar">
+    <span>9:41</span>
+    <span class="battery"></span>
+  </div>
+
+  <div class="head">
+    <div class="head-row">
+      <div class="back">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#241A16" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+      </div>
+      <div class="progress"><i id="bar" style="width:0%"></i></div>
+      <div class="lives">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="#E03B3B"><path d="M12 21s-7.5-4.7-9.3-9A5.4 5.4 0 0112 5.6 5.4 5.4 0 0121.3 12c-1.8 4.3-9.3 9-9.3 9z"/></svg>
+        <span>5</span>
+      </div>
+    </div>
+    <div class="crumbs">
+      <span style="color:var(--muted);flex:none">Práctica libre</span>
+      <span class="crumb-dot"></span>
+      <span style="color:var(--ink)">Reconocer señas</span>
+    </div>
+  </div>
+
+  <div class="stage">
+
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex:none">
+      <h1 class="title">Hacé una seña frente a la cámara</h1>
+    </div>
+
+    <div class="viewport">
+      <video id="cam" autoplay muted playsinline></video>
+      <canvas id="landmarks"></canvas>
+
+      <div class="cam-fallback" id="camFallback" hidden>
+        <div><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#241A16" stroke-width="2" stroke-linecap="round"><path d="M22 8.5l-5 3.5 5 3.5v-7z"/><rect x="2" y="6" width="14" height="12" rx="3"/></svg></div>
+        <div>cámara · sin permiso</div>
+      </div>
+
+      <div class="badge">
+        <i id="stateDot" style="background:#8C817A"></i>
+        <span id="stateLabel">Listo · esperando manos</span>
+      </div>
+
+      <div class="sweep" id="sweep" hidden><i></i></div>
+
+      <div class="result-card" id="resultCard" hidden>
+        <div style="width:34px;height:34px;border-radius:17px;background:var(--green-soft);display:flex;align-items:center;justify-content:center;flex:none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2E7D45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font:600 10.5px/1 Figtree,sans-serif;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)">Seña reconocida</div>
+          <div id="resultLabel" style="font:800 28px/1.1 'Bricolage Grotesque',sans-serif;letter-spacing:-1px;color:var(--ink);margin-top:3px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chips" id="chips"></div>
+
+    <div class="foot-hint"><span id="footHint">Ubicá tu mano dentro del encuadre</span></div>
+  </div>
+
+  <div class="cta-wrap">
+    <div class="cta" id="cta" style="background:var(--violet)">
+      <span id="ctaLabel" style="color:var(--violet-ink)">Iniciar reconocimiento</span>
+    </div>
+  </div>
+
+  <div class="help" id="help">
+    <b>Control de demo · H para ocultar</b>
+    <span id="helpText">Cargando modelo…</span>
+  </div>
+
+  <div class="home-bar"></div>
+</div>
+
+<script type="module">
+import { $, show, setText, replay, startCamera, FrameSender, LandmarkRenderer, COLORS, fetchMeta } from "./signa.js";
+
+// Señas a mostrar. Por defecto, letras que el modelo reconoce con solidez
+// (ver reports/alphabet_report.txt). Se puede cambiar con ?signs=A,B,L,O
+const params = new URLSearchParams(location.search);
+const SIGNS = (params.get("signs") || "A,B,C,L,O,V").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+
+const state = {
+  found: [],
+  phase: "idle",      // idle · capturing · result
+  running: false,
+  current: null,
+  helpOpen: true,
+};
+
+const video = $("cam");
+const renderer = new LandmarkRenderer($("landmarks"), video);
+let sender = null;
+let meta = null;
+let resultTimer = null;
+let cooldownUntil = 0;
+
+/* ── Render ───────────────────────────────────────────────────────────── */
+
+function renderChips() {
+  const host = $("chips");
+  if (host.children.length !== SIGNS.length) {
+    host.innerHTML = "";
+    SIGNS.forEach((label) => {
+      const el = document.createElement("div");
+      el.className = "chip";
+      el.innerHTML = `<span>${label}</span>`;
+      host.appendChild(el);
+    });
+  }
+  SIGNS.forEach((label, i) => {
+    const done = state.found.includes(label);
+    const active = state.current === label && state.phase !== "idle";
+    const el = host.children[i];
+    el.style.background = active && !done ? "#EEE8FF" : done ? "#E7F5EA" : "#FFFFFF";
+    el.style.border = done ? "2px solid #4CA65C" : active ? "2px solid #7857FF" : "1px solid #ECE5DE";
+    el.firstElementChild.style.color = done ? "#2E7D45" : active ? "#5E3ED1" : "#8C817A";
+  });
+}
+
+function render() {
+  const { phase, found, running } = state;
+  const hasResult = phase === "result";
+  const capturing = phase === "capturing";
+
+  $("bar").style.width = Math.round((found.length / SIGNS.length) * 100) + "%";
+
+  $("stateDot").style.background = hasResult ? COLORS.hit : capturing ? COLORS.idle : "#8C817A";
+  setText("stateLabel", !running ? "En pausa"
+    : hasResult ? "Detectado"
+    : capturing ? "Capturando seña"
+    : "Listo · esperando manos");
+
+  show($("sweep"), capturing && !hasResult);
+  show($("resultCard"), hasResult);
+
+  setText("footHint", hasResult ? "Volvé a la posición neutra para la próxima seña"
+    : capturing ? "Mantené la seña un segundo"
+    : "Ubicá tu mano dentro del encuadre");
+
+  $("cta").style.background = running ? "var(--sand)" : "var(--violet)";
+  $("ctaLabel").style.color = running ? "var(--ink)" : "var(--violet-ink)";
+  setText("ctaLabel", running ? "Detener secuencia" : "Iniciar reconocimiento");
+
+  renderer.accent = hasResult ? COLORS.hit : COLORS.idle;
+  renderChips();
+}
+
+/* ── Lógica ───────────────────────────────────────────────────────────── */
+
+function recognize(label) {
+  if (performance.now() < cooldownUntil) return;
+  if (!SIGNS.includes(label)) return;
+
+  clearTimeout(resultTimer);
+  state.current = label;
+  state.phase = "result";
+  if (!state.found.includes(label)) state.found.push(label);
+  setText("resultLabel", label);
+  replay($("resultCard"), "sgPop .42s cubic-bezier(.34,1.4,.5,1) both");
+  render();
+
+  // Cortamos el historial del reconocedor y damos una pausa: sin esto la misma
+  // seña se vuelve a confirmar frame tras frame y la tarjeta parpadea.
+  cooldownUntil = performance.now() + 2200;
+  if (sender) sender.reset();
+
+  resultTimer = setTimeout(() => {
+    state.phase = "idle";
+    state.current = null;
+    render();
+  }, 2600);
+}
+
+function onResult(data) {
+  if (data.error) return;
+  renderer.setLandmarks(data.landmarks);
+
+  if (state.phase !== "result") {
+    state.phase = data.hand ? "capturing" : "idle";
+    state.current = data.hand ? data.letter : null;
+    render();
+  }
+
+  if (data.confirmed) recognize(data.letter);
+
+  if (state.helpOpen) {
+    const top = (data.top || []).map((t) => `${t.letter} ${Math.round(t.confidence * 100)}%`).join("  ");
+    setText("helpText", `${top || "sin mano"} · ${Math.round(sender.fps)} fps · ${data.infer_ms} ms`
+      + " — teclas: letra = forzar · H ocultar · L landmarks · R reiniciar");
+  }
+}
+
+function toggle() {
+  state.running = !state.running;
+  if (state.running) { sender.start(); } else { sender.stop(); }
+  render();
+}
+
+function reset() {
+  clearTimeout(resultTimer);
+  state.found = [];
+  state.phase = "idle";
+  state.current = null;
+  cooldownUntil = 0;
+  if (sender) sender.reset();
+  render();
+}
+
+/* ── Arranque ─────────────────────────────────────────────────────────── */
+
+(async () => {
+  render();
+  try {
+    await startCamera(video);
+  } catch (e) {
+    show($("camFallback"), true);
+  }
+  renderer.start();
+
+  sender = new FrameSender(video, { onResult });
+  meta = await fetchMeta();
+  if (meta) {
+    setText("helpText", `${meta.model} · ${meta.labels.length} letras`
+      + (meta.cv ? ` · CV ${(meta.cv.mean * 100).toFixed(0)}%` : "")
+      + " — Iniciar para arrancar · H ocultar este panel");
+  }
+
+  $("cta").addEventListener("click", toggle);
+
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (k === " ") { e.preventDefault(); toggle(); return; }
+    if (k === "h") { state.helpOpen = !state.helpOpen; show($("help"), state.helpOpen); return; }
+    if (k === "l") { renderer.enabled = !renderer.enabled; return; }
+    if (k === "r") { reset(); return; }
+    // Forzar una seña a mano: red de seguridad si el modelo no coopera en la toma.
+    if (/^[a-zñ]$/.test(k)) recognize(k.toUpperCase());
+  });
+
+  // Punto de integración que ya esperaban los prototipos.
+  window.SignaRecognizer = { signs: SIGNS, emit: (l) => recognize(String(l).toUpperCase()) };
+})();
+</script>
+</body>
+</html>
