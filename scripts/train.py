@@ -26,7 +26,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.labels import get_signs, load_config
-from src.data.normalization import normalize_dataset
+from src.data.normalization import (con_encuadres, drop_pose, normalize_dataset,
+                                    solo_con_manos)
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "processed"
 MODELS_DIR = Path(__file__).parent.parent / "models"
@@ -92,7 +93,10 @@ def load_dataset(config: dict) -> tuple[np.ndarray, np.ndarray, dict]:
             if seq.shape != (sequence_length, 258):
                 skipped += 1
                 continue
-            X.append(seq)
+            util = solo_con_manos(seq)
+            if util is None:
+                continue
+            X.append(util)
             y.append(class_id)
             loaded += 1
 
@@ -138,14 +142,21 @@ def build_lstm_model(sequence_length: int, feature_dim: int, num_classes: int):
     """
     LSTM bidireccional. Mejor para señas dinámicas con movimiento complejo.
     Captura dependencias temporales en la secuencia de landmarks.
+
+    unroll=True: desenrolla el bucle temporal en pasos estáticos. Como
+    sequence_length es fijo (30), esto evita que Keras use TensorArray/
+    TensorListReserve internamente, que es lo que rompe la conversión a
+    TFLite ("op requires element_shape to be static"). El costo es un
+    grafo un poco más grande en memoria durante el entrenamiento, pero
+    con secuencias de 30 pasos es insignificante.
     """
     import tensorflow as tf
 
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=(sequence_length, feature_dim)),
-        tf.keras.layers.LSTM(64, return_sequences=True),
+        tf.keras.layers.LSTM(64, return_sequences=True, unroll=True),
         tf.keras.layers.Dropout(0.3),
-        tf.keras.layers.LSTM(64),
+        tf.keras.layers.LSTM(64, unroll=True),
         tf.keras.layers.Dropout(0.3),
         tf.keras.layers.Dense(64, activation="relu"),
         tf.keras.layers.Dense(num_classes, activation="softmax"),
@@ -174,6 +185,8 @@ def train(args):
 
     print("\nNormalizando...")
     X = normalize_dataset(X)
+    if not args.con_pose:
+        X = drop_pose(X)
 
     # One-hot encoding
     num_classes = len(label_map)
@@ -192,6 +205,17 @@ def train(args):
         test_size=val_size / (1 - test_size),
         random_state=42
     )
+    # La seña corrida dentro de la ventana, que es como llega en la app.
+    # Sólo sobre train: el test tiene que seguir midiendo sobre clips tal cual
+    # se grabaron, para poder comparar con las versiones anteriores.
+    rep = next((c for c, l in label_map.items() if l == "reposo"), None)
+    if rep is not None:
+        y_tr_idx = y_train.argmax(1)
+        reposos = X_train[y_tr_idx == rep]
+        X_train, y_tr_idx = con_encuadres(X_train, y_tr_idx, reposos,
+                                          np.random.default_rng(42))
+        y_train = tf.keras.utils.to_categorical(y_tr_idx, num_classes)
+
     print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
 
     # Construir modelo
@@ -325,6 +349,10 @@ def main():
     parser.add_argument(
         "--epochs", type=int, default=None,
         help="Número máximo de epochs (default: usa el config)"
+    )
+    parser.add_argument(
+        "--con-pose", action="store_true",
+        help="Dejar la pose como entrada. Por defecto se quita: ver drop_pose()"
     )
     args = parser.parse_args()
 

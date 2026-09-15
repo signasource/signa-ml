@@ -1,0 +1,12 @@
+{
+  "thresholds": {
+    "hermano": 0.78,
+    "amigo": 0.86,
+    "papa": 0.41,
+    "mama": 0.61
+  },
+  "min_precision": 0.7,
+  "min_recall": 0.85,
+  "identification_accuracy": 0.8328,
+  "clips_scored": 1310
+}
