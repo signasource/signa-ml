@@ -1,0 +1,12 @@
+{
+  "name": "signa-avatares",
+  "private": true,
+  "description": "Herramientas para dejar los .glb de las señas listos para el motor 3D de la app.",
+  "type": "module",
+  "dependencies": {
+    "@gltf-transform/core": "^4.1.0",
+    "@gltf-transform/extensions": "^4.1.0",
+    "@gltf-transform/functions": "^4.1.0",
+    "draco3dgltf": "^1.5.7"
+  }
+}

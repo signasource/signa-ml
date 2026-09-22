@@ -1,0 +1,13 @@
+{
+  "name": "signa-avatares",
+  "private": true,
+  "type": "module",
+  "description": "Conversión de los .glb de los avatares al formato que lee el motor 3D de la app.",
+  "dependencies": {
+    "@gltf-transform/cli": "^4.0.0",
+    "@gltf-transform/core": "^4.0.0",
+    "@gltf-transform/extensions": "^4.0.0",
+    "@gltf-transform/functions": "^4.0.0",
+    "draco3dgltf": "^1.5.7"
+  }
+}
