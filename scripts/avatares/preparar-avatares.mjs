@@ -13,7 +13,7 @@
  *
  *        npm init -y
  *        npm install @gltf-transform/core @gltf-transform/extensions \
- *                    @gltf-transform/functions draco3dgltf sharp
+ *                    @gltf-transform/functions draco3dgltf sharp basisu
  *
  *   3. Correrlo:
  *
@@ -26,18 +26,8 @@
  * Lee todos los .glb de la primera carpeta, escribe los preparados en la
  * segunda con el mismo nombre, y no toca los originales.
  *
- * ─── Opcional: texturas KTX2 ────────────────────────────────────────────────
- *
- * Si además está instalada la herramienta `ktx` de Khronos, las texturas se
- * comprimen en un formato que la placa de video lee sin desarmar: carga más
- * rápido y ocupa menos memoria. Sin ella, el script usa JPEG y PNG, que andan
- * igual de bien aunque un poco más lentos.
- *
- *   https://github.com/KhronosGroup/KTX-Software/releases
- *
- * OJO con la versión: hace falta 4.4 o más nueva. Con la 4.3 la compresión
- * falla textura por textura y el archivo sale igual pero en JPEG, sin que nada
- * lo avise. El script lo comprueba y lo dice al empezar.
+ * Eso alcanza: el compresor de texturas de Khronos viene en el paquete
+ * `basisu`, así que no hay que bajar nada a mano.
  *
  * ─── Qué arregla, y por qué ─────────────────────────────────────────────────
  *
@@ -59,7 +49,17 @@
  * mallas ni toca el movimiento.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
 const FALTAN = [];
@@ -98,26 +98,30 @@ const MAX_HUESOS = 256;
 const LADO_TEXTURA = 1024;
 
 /**
- * ¿Está la herramienta de Khronos, y sirve?
+ * El compresor de texturas de Khronos que viene en el paquete `basisu`.
  *
- * La 4.3 no entiende las opciones que le pasa gltf-transform y falla textura
- * por textura, en silencio: el archivo sale igual, pero con las texturas en
- * JPEG en vez de comprimidas. Por eso se mira la versión y no sólo que exista.
+ * Se busca el binario a mano en vez de usar el atajo que trae el paquete:
+ * ese atajo depende de otro módulo nativo que no siempre compila, y acá sólo
+ * hace falta el ejecutable.
  */
-const hayKtx = (() => {
-  try {
-    const salida = execFileSync('ktx', ['--version'], { encoding: 'utf8' });
-    const version = salida.match(/v?(\d+)\.(\d+)/);
-    if (!version) return false;
-    const sirve = Number(version[1]) > 4 || (Number(version[1]) === 4 && Number(version[2]) >= 4);
-    if (!sirve) {
-      console.warn(`La herramienta ktx es la ${version[0]} y hace falta 4.4 o más nueva.`);
-      console.warn('Se usan JPEG y PNG, que andan igual aunque cargan un poco más lento.\n');
+const basisu = (() => {
+  const plataformas = { linux: 'linux', darwin: 'darwin', win32: 'win' };
+  const carpeta = plataformas[process.platform];
+  if (!carpeta) return null;
+  const arco = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const exe = process.platform === 'win32' ? 'basisu.exe' : 'basisu';
+  for (const variante of [arco, `${arco}_sse`]) {
+    const ruta = join(process.cwd(), 'node_modules', 'basisu', 'bin', carpeta, variante, exe);
+    if (!existsSync(ruta)) continue;
+    try {
+      if (process.platform !== 'win32') chmodSync(ruta, 0o755);
+      execFileSync(ruta, ['-version'], { stdio: 'ignore' });
+      return ruta;
+    } catch {
+      // Probar la otra variante.
     }
-    return sirve;
-  } catch {
-    return false;
   }
+  return null;
 })();
 
 const io = new core.NodeIO()
@@ -205,6 +209,9 @@ function podarCanales(doc) {
   return quitados;
 }
 
+let contador = 0;
+const resumen = [];
+
 const archivos = readdirSync(entrada).filter((n) => n.toLowerCase().endsWith('.glb'));
 if (!archivos.length) {
   console.error(`No hay archivos .glb en ${resolve(entrada)}`);
@@ -212,7 +219,11 @@ if (!archivos.length) {
 }
 
 mkdirSync(salida, { recursive: true });
-console.log(hayKtx ? 'Texturas: KTX2 (la mejor opción)' : 'Texturas: JPEG/PNG (sin la herramienta ktx)');
+console.log(
+  basisu
+    ? 'Texturas: KTX2, comprimidas para la placa de video'
+    : 'Texturas: JPEG y PNG (no se encontró el compresor de Khronos para esta plataforma)',
+);
 console.log('');
 
 for (const nombre of archivos) {
@@ -223,6 +234,7 @@ for (const nombre of archivos) {
   const doc = await io.read(origen);
   const huesos = podarHuesos(doc);
   const canales = podarCanales(doc);
+  let usaKtx2 = false;
 
   // Texturas: a un formato que el motor entienda y al tamaño que se usa en
   // pantalla. JPEG salvo que la textura tenga transparencia —el pelo la usa—,
@@ -243,12 +255,41 @@ for (const nombre of archivos) {
     const alto = aMultiploDe4(meta.height ?? LADO_TEXTURA);
     const escalada = imagen.resize(ancho, alto, { fit: 'fill', kernel: 'lanczos3' });
 
-    if (meta.hasAlpha) {
-      textura.setImage(await escalada.png().toBuffer()).setMimeType('image/png');
-    } else {
-      textura.setImage(await escalada.jpeg({ quality: 90 }).toBuffer()).setMimeType('image/jpeg');
+    const conAlfa = Boolean(meta.hasAlpha);
+    const intermedio = conAlfa
+      ? await escalada.png().toBuffer()
+      : await escalada.jpeg({ quality: 92 }).toBuffer();
+
+    if (!basisu) {
+      textura
+        .setImage(intermedio)
+        .setMimeType(conAlfa ? 'image/png' : 'image/jpeg');
+      continue;
     }
+
+    // KTX2: la textura queda comprimida también mientras se dibuja, así que la
+    // placa de video la lee tal cual, sin desarmarla y sin ocupar de más.
+    const entradaTmp = join(tmpdir(), `signa-${process.pid}-${contador++}.${conAlfa ? 'png' : 'jpg'}`);
+    const salidaTmp = `${entradaTmp}.ktx2`;
+    writeFileSync(entradaTmp, intermedio);
+    try {
+      execFileSync(
+        basisu,
+        ['-ktx2', '-mipmap', '-q', '190', ...(conAlfa ? ['-force_alpha'] : []), '-output_file', salidaTmp, entradaTmp],
+        { stdio: 'ignore' },
+      );
+      textura.setImage(readFileSync(salidaTmp)).setMimeType('image/ktx2');
+      usaKtx2 = true;
+    } catch {
+      textura.setImage(intermedio).setMimeType(conAlfa ? 'image/png' : 'image/jpeg');
+      console.warn(`  (${nombre}: una textura no se pudo comprimir, queda sin comprimir)`);
+    }
+    for (const tmp of [entradaTmp, salidaTmp]) if (existsSync(tmp)) rmSync(tmp);
   }
+
+  // Declarar KTX2 en el archivo: sin esto, un visor que lo abra no sabe que
+  // tiene que pedirle a la placa de video que lo descomprima.
+  if (usaKtx2) doc.createExtension(extensions.KHRTextureBasisu).setRequired(true);
 
   // La extensión de webp queda declarada aunque ya no haya ninguna textura en
   // ese formato, y un cargador estricto puede exigirla igual.
@@ -263,35 +304,9 @@ for (const nombre of archivos) {
     functions.prune(),
   );
 
-  // Los dos últimos pasos necesitan binarios aparte, así que van por la línea
-  // de comandos. Se encadenan con archivos temporales: escribir sobre el mismo
-  // archivo que se está leyendo no funciona y se saltea en silencio.
-  const paso1 = `${destino}.paso1`;
-  const paso2 = `${destino}.paso2`;
-  await io.write(paso1, doc);
-
-  const cli = (comando, ent, sal) => {
-    execFileSync('npx', ['--yes', '@gltf-transform/cli@latest', comando, ent, sal], {
-      stdio: 'ignore',
-    });
-  };
-
-  let actual = paso1;
-  if (hayKtx) {
-    try {
-      cli('etc1s', actual, paso2);
-      actual = paso2;
-    } catch {
-      console.warn(`  (${nombre}: no se pudo comprimir a KTX2, sigue en JPEG)`);
-    }
-  }
-  try {
-    cli('draco', actual, destino);
-  } catch {
-    renameSync(actual, destino);
-    console.warn(`  (${nombre}: no se pudo comprimir la malla con Draco)`);
-  }
-  for (const temporal of [paso1, paso2]) if (existsSync(temporal)) rmSync(temporal);
+  // Las mallas se vuelven a comprimir con Draco al escribir: el archivo ya
+  // traía esa extensión y se conserva.
+  await io.write(destino, doc);
 
   const despues = statSync(destino).size;
   const detalle = [
@@ -302,8 +317,42 @@ for (const nombre of archivos) {
     `  ${basename(nombre).padEnd(16)} ${(antes / 1048576).toFixed(2)} MB → ` +
       `${(despues / 1048576).toFixed(2)} MB${detalle.length ? `  (sacados: ${detalle.join(', ')})` : ''}`,
   );
+  resumen.push({ nombre, antes, despues, huesos, canales, ktx2: usaKtx2 });
 }
 
+// Un resumen al lado de los archivos: quien los sube no es necesariamente
+// quien los preparó, y conviene que pueda ver qué se tocó sin preguntar.
+const lineas = [
+  'Avatares preparados para el motor 3D de la app.',
+  '',
+  'archivo'.padEnd(20) + 'antes'.padStart(10) + 'después'.padStart(10) + '  texturas',
+  ''.padEnd(52, '-'),
+  ...resumen.map(
+    (r) =>
+      r.nombre.padEnd(20) +
+      `${(r.antes / 1048576).toFixed(2)} MB`.padStart(10) +
+      `${(r.despues / 1048576).toFixed(2)} MB`.padStart(10) +
+      `  ${r.ktx2 ? 'KTX2' : 'JPEG/PNG'}` +
+      (r.huesos ? `  · ${r.huesos} huesos de más quitados` : '') +
+      (r.canales ? `  · ${r.canales} canales sin efecto quitados` : ''),
+  ),
+  '',
+  'Qué se hizo en cada uno, y por qué:',
+  '  · huesos que la malla no usa: arriba de 256 el motor de la app se cierra',
+  '  · canales de animación que mueven huesos que ya no deforman nada',
+  '  · nodos sueltos, llaves de animación repetidas y vértices duplicados',
+  '  · texturas a 1024 px y comprimidas; el canal de animación sin datos, arreglado',
+  '  · mallas recomprimidas con Draco',
+  '',
+  'Nada de esto cambia cómo se ve la seña: no se simplificaron las mallas ni se',
+  'tocó el movimiento.',
+];
+writeFileSync(join(salida, 'resumen.txt'), lineas.join('\n') + '\n');
+
 console.log(`\nListo: ${archivos.length} archivo(s) en ${resolve(salida)}`);
-console.log('Para revisar uno antes de subirlo:');
-console.log(`  npx @gltf-transform/cli inspect ${join(salida, archivos[0])}`);
+console.log('');
+console.log('Para subirlos: el contenido de esa carpeta reemplaza a los archivos del');
+console.log('mismo nombre que hay hoy en el servidor. No hay que renombrar nada ni');
+console.log('cambiar la estructura; la app los pide por el nombre de la seña.');
+console.log('');
+console.log(`Queda también ${join(salida, 'resumen.txt')} con el detalle de cada archivo.`);
