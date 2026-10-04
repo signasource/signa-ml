@@ -3,9 +3,23 @@ Runner de inferencia del modelo de abecedario, compartido por el script de
 prueba en vivo y por las escenas de la demo.
 
 Encapsula lo que hay que hacer bien para que el reconocimiento no titile:
-    - una sola instancia de MediaPipe Hands en modo tracking (no static)
+    - los MISMOS detectores con los que se armó el dataset y que corre la app
+      (MediaPipe Tasks: HandLandmarker + PoseLandmarker, en modo imagen)
     - promedio móvil de probabilidades (no del argmax): suaviza sin agregar lag
     - confirmación por N frames consecutivos antes de dar una letra por buena
+
+Sobre los detectores: este runner usaba las soluciones legacy (`mp.solutions`
+Hands + BlazeFace) cuando el dataset ya se extraía con Tasks y la cara salía
+de la pose. Son modelos distintos, y el bloque de cara —la mitad de la entrada
+del modelo— se calculaba con puntos que el modelo nunca vio al entrenar. Además
+el .tflite que levantaba la demo (v3) se había entrenado con un dataset viejo,
+extraído con los legacy, mientras que el .keras que va a la app y los umbrales
+salían del dataset de Tasks: la demo combinaba un modelo con los umbrales de
+otro. Pasado por estos detectores, el v3 acierta 27% de las fotos de su propio
+dataset; el .keras, 94%.
+
+Por eso el modelo trae en su metadata con qué detectores se extrajo su dataset
+(`detectors`), y acá se avisa si no son estos.
 """
 from __future__ import annotations
 
@@ -20,7 +34,14 @@ from src.data.hand_features import (build_features, build_face_features, mirror,
                                     FEATURE_DIM, FACE_BLOCK_DIM,
                                     FACE_INDEX_Y, FACE_PRESENT)
 
-EXPORTS_DIR = Path(__file__).parent.parent.parent / "models" / "exports"
+ROOT = Path(__file__).parent.parent.parent
+EXPORTS_DIR = ROOT / "models" / "exports"
+# Los .task viajan con la app; se usan esos mismos para que lo que ve la demo
+# sea lo que va a ver el teléfono.
+# Los .task viajan con la app; se usan esos mismos para que lo que ve la demo
+# sea lo que va a ver el teléfono.
+MEDIAPIPE_DIR = ROOT.parent / "signa-mobile" / "assets" / "mediapipe"
+DETECTORS = "mediapipe-tasks"
 
 
 def load_thresholds(tflite_path: Path, labels: list[str]) -> dict[str, float]:
@@ -71,14 +92,19 @@ def get_interpreter(tflite_path: Path):
 
 
 # Pares de letras que comparten la forma de la mano y sólo se distinguen por
-# DÓNDE se apoya: la T en la pera, la I en el ojo. El modelo ya recibe esa
-# posición, pero no termina de decidirse — se lo midió prediciendo I con 58%
-# sobre una mano que estaba claramente en la pera. Entre esas dos la decisión
-# la toma directamente la altura, que en el dataset separa las dos nubes al 99%
-# (la I nunca baja de +0.57, la T nunca sube por encima de +0.89).
+# DÓNDE se apoya: la T en la boca, la I al costado del ojo. El modelo ya recibe
+# esa posición, pero no termina de decidirse: fuera de muestra puntúa fotos de I
+# con p(T) de 0.99. Entre esas dos la decisión la toma la altura de la punta del
+# índice, que en el dataset separa las dos nubes (la I nunca pasa de 0.59, la T
+# nunca baja de 0.75; el corte va en el medio).
 #
-#   (letra de abajo, letra de arriba, umbral)   ojos = 0.0 · boca = 1.0
-LOCATION_PAIRS = (("I", "T", 0.73),)
+# El corte es suave: a LOCATION_SOFTNESS del límite la probabilidad se reparte
+# en vez de saltar de una letra a la otra. Con el corte duro, una T con la punta
+# del dedo tocando la nariz quedaba con p(T) = 0 y no había forma de que pasara.
+#
+#   (letra de arriba en la cara, letra de abajo, umbral)   ojos = 0.0 · boca = 1.0
+LOCATION_PAIRS = (("I", "T", 0.67),)
+LOCATION_SOFTNESS = 0.04
 
 
 class AlphabetRecognizer:
@@ -117,12 +143,17 @@ class AlphabetRecognizer:
 
     def __init__(self, model_path: Path | None = None, threshold: float = 0.75,
                  confirm_frames: int = 5, smoothing_window: int = 7,
-                 min_detection_confidence: float = 0.6):
-        import mediapipe as mp
+                 mediapipe_dir: Path | None = None, pose_every: int = 5):
+        from src.data.tasks_extractor import detectores_estaticos
 
         self.model_path, self.meta = load_latest_alphabet_model(model_path)
         labels = self.meta.get("labels", {})
         self.labels = [labels[str(i)] for i in range(len(labels))] if labels else []
+
+        if self.meta.get("detectors") != DETECTORS:
+            print(f"  ⚠ {self.model_path.name} no dice que se haya entrenado con {DETECTORS}: "
+                  "si su dataset salió de los detectores legacy, acá va a acertar muy "
+                  "poco. Reentrenalo con scripts/train_alphabet.py --with-face.")
 
         self.interpreter = get_interpreter(self.model_path)
         self.interpreter.allocate_tensors()
@@ -141,25 +172,28 @@ class AlphabetRecognizer:
                 f"{FEATURE_DIM} de mano + N×{FACE_BLOCK_DIM} de cara.")
         self.face_repeat = extra // FACE_BLOCK_DIM
 
-        self.face = None
-        if self.face_repeat:
-            self.face = mp.solutions.face_detection.FaceDetection(
-                model_selection=1, min_detection_confidence=0.4)
-            self._face_kp = mp.solutions.face_detection.FaceKeyPoint
-
         self.threshold = threshold
         self.confirm_frames = confirm_frames
         self.thresholds = load_thresholds(self.model_path, self.labels)
 
-        # static_image_mode=False activa el tracking entre frames: mucho más
-        # rápido y mucho más estable que re-detectar la mano en cada frame.
-        self.hands = mp.solutions.hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            model_complexity=1,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=0.5,
-        )
+        # Los mismos dos detectores, con la misma configuración, que usa
+        # build_alphabet_dataset.py: así el modelo ve en vivo exactamente los
+        # números con los que se entrenó. Modo imagen, como la app.
+        models_dir = Path(mediapipe_dir) if mediapipe_dir else MEDIAPIPE_DIR
+        faltan = [n for n in ("hand_landmarker.task", "pose_landmarker.task")
+                  if not (models_dir / n).is_file()]
+        if faltan:
+            raise FileNotFoundError(
+                f"Faltan {', '.join(faltan)} en {models_dir}. Son los de la app "
+                "(signa-mobile/assets/mediapipe); pasá la carpeta con mediapipe_dir.")
+        self.pose, self.hands = detectores_estaticos(models_dir)
+
+        # La pose se refresca 1 de cada `pose_every` frames, igual que en la
+        # app: de ella sólo sale la referencia de la cara, y la cabeza se mueve
+        # mucho más despacio que la mano. Si el modelo no usa la cara, ni se corre.
+        self.pose_every = max(1, pose_every)
+        self._frames = 0
+        self._pose_res = None
 
         self._window: deque = deque(maxlen=smoothing_window)
         self._streak = 0
@@ -169,8 +203,7 @@ class AlphabetRecognizer:
 
     def close(self):
         self.hands.close()
-        if self.face is not None:
-            self.face.close()
+        self.pose.close()
 
     def _apply_location_rules(self, probs, cara):
         """
@@ -178,7 +211,7 @@ class AlphabetRecognizer:
 
         Se hace sobre las probabilidades y no sobre el argmax final para que
         valga igual en identificación y en verificación: si la mano está en la
-        pera, p(I) queda en cero y la demo deja de aceptar una T como I.
+        boca, p(I) queda casi en cero y la demo deja de aceptar una T como I.
         Sin cara detectada no se toca nada: no hay altura confiable que usar.
         """
         if cara is None or cara[FACE_PRESENT] != 1.0:
@@ -191,25 +224,39 @@ class AlphabetRecognizer:
             total = probs[i_baja] + probs[i_alta]
             if total <= 0:
                 continue
-            gana = i_alta if altura > umbral else i_baja
-            pierde = i_baja if gana == i_alta else i_alta
+            # Peso de la letra que va más abajo en la cara (la T): 0.5 justo en
+            # el umbral, y casi 1 apenas la punta del dedo baja de ahí.
+            peso_alta = 1.0 / (1.0 + np.exp(-(altura - umbral) / LOCATION_SOFTNESS))
             probs = probs.copy()
-            probs[gana], probs[pierde] = total, 0.0
+            probs[i_alta], probs[i_baja] = total * peso_alta, total * (1.0 - peso_alta)
         return probs
 
-    def _face_reference(self, rgb):
-        """(centro de ojos, centro de boca) o (None, None) si no se ve la cara."""
-        if self.face is None:
-            return None, None
-        det = self.face.process(rgb)
-        if not det.detections:
-            return None, None
-        kp = det.detections[0].location_data.relative_keypoints
-        K = self._face_kp
-        ojo = np.array([(kp[K.RIGHT_EYE].x + kp[K.LEFT_EYE].x) / 2,
-                        (kp[K.RIGHT_EYE].y + kp[K.LEFT_EYE].y) / 2])
-        boca = np.array([kp[K.MOUTH_CENTER].x, kp[K.MOUTH_CENTER].y])
-        return ojo, boca
+    def _face_reference(self, imagen):
+        """(centro de ojos, centro de boca) sacados de la pose, o (None, None)."""
+        from src.data.tasks_extractor import referencia_cara
+
+        if self._pose_res is None or self._frames % self.pose_every == 0:
+            self._pose_res = self.pose.detect(imagen)
+        return referencia_cara(self._pose_res)
+
+    def track(self, frame_bgr: np.ndarray) -> np.ndarray | None:
+        """
+        Sólo la mano, sin clasificar: landmarks en píxeles, o None.
+
+        Es lo que usa la demo con el reconocimiento en pausa, para que el
+        esqueleto se siga dibujando. No toca el suavizado ni las rachas: al
+        reanudar se arranca igual que si nunca se hubiera pausado.
+        """
+        import mediapipe as mp
+        from src.data.tasks_extractor import mano_principal
+
+        h, w = frame_bgr.shape[:2]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        found = mano_principal(self.hands.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)))
+        if found is None:
+            return None
+        lm = found[0]
+        return np.column_stack([lm[:, 0] * w, lm[:, 1] * h]).astype(np.int32)
 
     def reset(self):
         """Olvida el historial — útil al cambiar de letra objetivo en la demo."""
@@ -233,11 +280,22 @@ class AlphabetRecognizer:
         el deletreo — incluso las que en identificación pierden contra una
         vecina parecida.
         """
+        import mediapipe as mp
+        from src.data.tasks_extractor import mano_principal
+
         h, w = frame_bgr.shape[:2]
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        results = self.hands.process(rgb)
+        imagen = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        found = mano_principal(self.hands.detect(imagen))
 
-        if not results.multi_hand_landmarks:
+        # La pose se mira aunque no haya mano: así, cuando la mano aparece, la
+        # referencia de la cara ya está y el primer frame no sale sin posición.
+        ojo = boca = None
+        if self.face_repeat:
+            ojo, boca = self._face_reference(imagen)
+        self._frames += 1
+
+        if found is None:
             self._window.clear()
             self._streak = 0
             self._last = None
@@ -246,18 +304,8 @@ class AlphabetRecognizer:
             n = len(self.labels)
             return self.Result(None, 0.0, np.zeros(n), False, None, False, target=target)
 
-        hand = results.multi_hand_landmarks[0]
-        lm = np.array([[p.x, p.y, p.z] for p in hand.landmark])
+        lm, world, label, _score = found
         landmarks_px = np.column_stack([lm[:, 0] * w, lm[:, 1] * h]).astype(np.int32)
-
-        world = None
-        if getattr(results, "multi_hand_world_landmarks", None):
-            world = np.array([[p.x, p.y, p.z]
-                              for p in results.multi_hand_world_landmarks[0].landmark])
-
-        label = "Right"
-        if results.multi_handedness:
-            label = results.multi_handedness[0].classification[0].label
         espejada = label.lower().startswith("l")
 
         # Igual que al construir el dataset: la posición se mide con los
@@ -265,7 +313,6 @@ class AlphabetRecognizer:
         cara = None
         face_present = None
         if self.face_repeat:
-            ojo, boca = self._face_reference(rgb)
             face_present = ojo is not None
             cara = build_face_features(lm, ojo, boca, mirrored=espejada)
 
