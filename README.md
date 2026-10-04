@@ -118,15 +118,24 @@ señante con el train set.
 
 ```bash
 # 0. Levantar las escenas para grabar el video (ver demo/README.md)
-python demo/server.py        # → http://localhost:8000/simple.html
+python demo/server.py --signs   # → http://localhost:8000/ (menú: nombre y señas)
 
 # 1. Extraer landmarks de las fotos (con aumentación a nivel imagen)
 python scripts/build_alphabet_dataset.py
 
-# 2. Entrenar + exportar .tflite
-python scripts/train_alphabet.py --cv        # --cv = validación cruzada por fuente
+# 2. Entrenar + exportar .tflite (con la posición respecto de la cara)
+python scripts/train_alphabet.py --with-face --cv   # --cv = validación cruzada por fuente
 
-# 3. Probar en vivo
+# 3. Calibrar un umbral por letra (modo verificación)
+python scripts/calibrate_alphabet.py --with-face
+
+# 4. Llevarlo a la app (assets/ y el módulo nativo, golden incluido)
+python scripts/export_alphabet_for_app.py
+
+# 5. Llevarlo a la landing (signa-web: demo "Tu cámara te corrige", sin TFLite)
+python scripts/export_alphabet_for_web.py
+
+# Probar en vivo
 python scripts/predict_alphabet_realtime.py
 
 # (opcional pero muy recomendado) sumar fotos propias con tu webcam

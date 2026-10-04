@@ -39,6 +39,53 @@ from src.data.hand_features import (FEATURE_DIM, FINGER_CHAINS, INDEX_MCP,
 ROOT = Path(__file__).parent.parent
 DEFAULT_MODEL = ROOT / "models" / "saved_model" / "signa_alphabet.keras"
 DEFAULT_OUT = ROOT.parent / "signa-mobile" / "assets" / "tflite"
+# El reconocedor nativo lee sus propios assets (ver LEEME.md ahí): el .tflite,
+# alfabeto.json con etiquetas y umbrales, y el golden con el que Golden.kt
+# verifica que Kotlin arme las entradas igual que Python.
+NATIVE_ASSETS = (ROOT.parent / "signa-mobile" / "modules" / "signa-vision" / "android"
+                 / "src" / "main" / "assets")
+
+
+def actualizar_nativo(tflite: bytes, etiquetas: list[str], umbrales: dict, destino: Path):
+    """
+    Deja el módulo nativo con este modelo: .tflite, alfabeto.json y el golden.
+
+    El golden guarda casos reales (landmarks, pose, bloque de cara) con las
+    probabilidades que da el modelo. Las entradas no dependen del modelo, pero
+    las probabilidades sí: con un modelo nuevo hay que recalcularlas, o
+    Golden.kt reporta una diferencia que no es un error de la app. Se calculan
+    corriendo este mismo .tflite con las entradas armadas como en
+    ModeloAbecedario.kt (mano izquierda espejada en x, cara tal cual).
+    """
+    import tensorflow as tf
+
+    (destino / "alfabeto.tflite").write_bytes(tflite)
+    (destino / "alfabeto.json").write_text(json.dumps(
+        {"labels": etiquetas, "thresholds": umbrales}, indent=1, ensure_ascii=False),
+        encoding="utf-8")
+
+    golden_path = destino / "golden_abecedario.json"
+    if not golden_path.exists():
+        print("  (sin golden_abecedario.json en el módulo nativo: no se actualiza)")
+        return
+    golden = json.loads(golden_path.read_text(encoding="utf-8"))
+    interprete = tf.lite.Interpreter(model_content=tflite)
+    interprete.allocate_tensors()
+    entradas = {d["name"]: d["index"] for d in interprete.get_input_details()}
+    idx = {k: next(i for n, i in entradas.items() if k in n) for k in ("landmarks", "world", "cara")}
+    salida = interprete.get_output_details()[0]["index"]
+    for caso in golden["casos"]:
+        signo = np.array([-1.0 if caso["izquierda"] else 1.0, 1.0, 1.0], np.float32)
+        lm = np.asarray(caso["lm"], np.float32) * signo
+        world = np.asarray(caso["world"], np.float32) * signo
+        interprete.set_tensor(idx["landmarks"], lm[None])
+        interprete.set_tensor(idx["world"], world[None])
+        interprete.set_tensor(idx["cara"], np.asarray(caso["cara"], np.float32)[None])
+        interprete.invoke()
+        caso["probs"] = [round(float(v), 6) for v in interprete.get_tensor(salida)[0]]
+    golden["labels"] = etiquetas
+    golden_path.write_text(json.dumps(golden, ensure_ascii=False), encoding="utf-8")
+    print(f"  módulo nativo: alfabeto.tflite, alfabeto.json y golden ({len(golden['casos'])} casos) → {destino}")
 
 
 def _ultimo(patron: str) -> Path:
@@ -131,13 +178,19 @@ def main() -> None:
     p.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT)
     p.add_argument("--face-repeat", type=int, default=32)
+    p.add_argument("--sin-nativo", action="store_true",
+                   help="No tocar los assets del módulo nativo (signa-vision)")
     p.add_argument("--muestras", type=int, default=200,
                    help="Cuántas filas del dataset usar para verificar")
     args = p.parse_args()
 
     import tensorflow as tf
 
-    clasificador = tf.keras.models.load_model(args.model)
+    # compile=False: para exportar alcanza la red; la pérdida de entrenamiento
+    # (label smoothing a mano, ver train_alphabet._smoothed_loss) no hace falta.
+    from src.utils.losses import CUSTOM_OBJECTS
+    clasificador = tf.keras.models.load_model(args.model, compile=False,
+                                              custom_objects=CUSTOM_OBJECTS)
     calcular = capa_de_features(tf)
 
     lm_in = tf.keras.Input(shape=(N_LANDMARKS, 3), name="landmarks")
@@ -204,6 +257,9 @@ def main() -> None:
 
     print(f"{len(tflite) / 1024:.0f} KB → {destino}")
     print(f"  etiquetas: {' '.join(etiquetas)}")
+
+    if NATIVE_ASSETS.is_dir() and not args.sin_nativo:
+        actualizar_nativo(tflite, etiquetas, umbrales["thresholds"], NATIVE_ASSETS)
 
 
 if __name__ == "__main__":
