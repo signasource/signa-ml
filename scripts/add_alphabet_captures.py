@@ -4,8 +4,11 @@ Suma al dataset del abecedario las muestras grabadas desde la demo web.
 La demo (signa-web, «Tu cámara te corrige» con ?captura en la dirección) graba
 los mismos 266 valores que usa el modelo: 258 de la mano y 8 de la posición
 respecto de la cara. Este script los agrega a alphabet_dataset.npz como fuentes
-nuevas, una por archivo, para que la validación cruzada agrupada deje afuera
-grabaciones enteras igual que deja afuera videos enteros.
+nuevas, una por grabación (cada toque de «Grabar» son ~45 cuadros seguidos),
+para que la validación cruzada agrupada deje afuera grabaciones enteras igual
+que deja afuera videos enteros. Cada descarga incluye las grabaciones
+anteriores de la misma visita: las muestras repetidas entre archivos se
+descartan.
 
 Uso:
     python scripts/add_alphabet_captures.py muestras-*.json
@@ -37,6 +40,8 @@ def main() -> None:
     ap.add_argument("files", nargs="+", type=Path)
     ap.add_argument("--every", type=int, default=4,
                     help="tomar 1 de cada N cuadros (los cuadros seguidos son casi iguales)")
+    ap.add_argument("--burst", type=int, default=45,
+                    help="cuadros por grabación: cada bloque es una fuente aparte")
     args = ap.parse_args()
 
     if not BASE.exists():
@@ -44,23 +49,34 @@ def main() -> None:
     d = dict(np.load(BASE, allow_pickle=True))
     letters = [str(l) for l in d["letters"]]
 
+    seen, runs = set(), []
+    for path in args.files:
+        data = json.loads(path.read_text())
+        fresh = 0
+        for s in data["samples"]:
+            f = np.asarray(s["features"], dtype=np.float32)
+            key = f.round(5).tobytes()
+            if f.shape != (FEATURE_DIM + FACE_BLOCK_DIM,) or s["letter"] not in letters or key in seen:
+                continue
+            seen.add(key)
+            fresh += 1
+            if not runs or runs[-1][0] != s["letter"] or len(runs[-1][1]) >= args.burst:
+                runs.append((s["letter"], []))
+            runs[-1][1].append(f)
+        print(f"{path.name}: {fresh} muestras nuevas ({data.get('device', '?')[:60]})")
+
     X, face, y, src, aug, mir = [], [], [], [], [], []
     added = Counter()
-    for k, path in enumerate(args.files):
-        data = json.loads(path.read_text())
-        samples = data["samples"][:: args.every]
-        for s in samples:
-            f = np.asarray(s["features"], dtype=np.float32)
-            if f.shape != (FEATURE_DIM + FACE_BLOCK_DIM,) or s["letter"] not in letters:
-                continue
+    for k, (letter, frames) in enumerate(runs):
+        for f in frames[:: args.every]:
             X.append(f[:FEATURE_DIM])
             face.append(f[FEATURE_DIM:])
-            y.append(letters.index(s["letter"]))
+            y.append(letters.index(letter))
             src.append(FIRST_SOURCE + k)
             aug.append(False)
             mir.append(False)
-            added[s["letter"]] += 1
-        print(f"{path.name}: {len(samples)} muestras ({data.get('device', '?')[:60]})")
+            added[letter] += 1
+    print(f"{len(runs)} grabaciones")
 
     if not X:
         sys.exit("No había muestras válidas.")
