@@ -41,7 +41,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data.hand_features import FEATURE_DIM
+from src.data.hand_features import (FACE_BLOCK_DIM, FEATURE_DIM, rotate_hand_features,
+                                    rotation_matrix, shift_face_block)
 
 ROOT = Path(__file__).parent.parent
 CONFIG_PATH = ROOT / "configs" / "alphabet_config.yaml"
@@ -155,9 +156,58 @@ def build_ensemble(models):
     return tf.keras.Model(inp, avg, name="signa_alphabet_ensemble")
 
 
-def train_ensemble(X_tr, y_tr, X_va, y_va, num_classes, cfg, epochs, n, verbose=1):
+def augment_postures(X, y, letters, cfg, seed=0):
+    """
+    Copias de cada muestra en otras posturas: la mano girada y en otra altura.
+
+    Con 15 fotos por letra, cómo la hizo cada persona en su video termina
+    siendo parte de la letra. La A casi siempre aparece de costado y a la
+    altura del hombro, y el modelo aprendía eso: una A de frente o a la altura
+    del pecho no pasaba. Acá se le muestra la misma forma de mano girada y
+    corrida, para que aprenda qué cosas NO cambian la letra.
+
+    La posición se corre sólo en las letras que no se distinguen por ella
+    (`location_letters` quedan fijas: la T en la boca y la I en el ojo tienen
+    la misma forma de mano, y lo único que las separa es la altura).
+    """
+    aug = cfg.get("posture_augment") or {}
+    copies = int(aug.get("copies", 0))
+    if copies <= 0:
+        return X, y
+
+    rng = np.random.default_rng(seed)
+    fijas = {letters.index(l) for l in aug.get("location_letters", []) if l in letters}
+    giro = aug.get("yaw_deg", 0.0), aug.get("pitch_deg", 0.0)
+    giro_letra = {letters.index(l): float(v)
+                  for l, v in (aug.get("yaw_deg_by_letter") or {}).items() if l in letters}
+    dx, dy = aug.get("shift_x", 0.0), aug.get("shift_y", 0.0)
+    tam = aug.get("size", [1.0, 1.0])
+
+    n_face = (X.shape[1] - FEATURE_DIM) // FACE_BLOCK_DIM
+    extra_X, extra_y = [], []
+    for _ in range(copies):
+        Xc = X.copy()
+        for i in range(len(Xc)):
+            yaw = giro_letra.get(int(y[i]), giro[0])
+            R = rotation_matrix(rng.uniform(-yaw, yaw), rng.uniform(-giro[1], giro[1]))
+            Xc[i, :FEATURE_DIM] = rotate_hand_features(Xc[i, :FEATURE_DIM], R)
+            if n_face and int(y[i]) not in fijas:
+                cara = shift_face_block(Xc[i, FEATURE_DIM:FEATURE_DIM + FACE_BLOCK_DIM],
+                                        rng.uniform(-dx, dx), rng.uniform(-dy, dy),
+                                        rng.uniform(*tam))
+                Xc[i, FEATURE_DIM:] = np.tile(cara, n_face)
+        extra_X.append(Xc)
+        extra_y.append(y)
+    return np.concatenate([X] + extra_X), np.concatenate([y] + extra_y)
+
+
+def train_ensemble(X_tr, y_tr, X_va, y_va, num_classes, cfg, epochs, n, verbose=1,
+                   letters=None):
     """Entrena n redes con semillas distintas y devuelve el modelo promediado."""
     import tensorflow as tf
+
+    if letters is not None:
+        X_tr, y_tr = augment_postures(X_tr, y_tr, letters, cfg)
 
     models = []
     for i in range(n):
@@ -209,10 +259,8 @@ def fit(model, X_tr, y_tr, X_va, y_va, cfg, epochs, verbose=1):
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg["learning_rate"]),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(
-            label_smoothing=cfg["label_smoothing"]
-        ) if _supports_smoothing() else "sparse_categorical_crossentropy",
-        metrics=["accuracy"],
+        loss=_smoothed_loss(len(counts), cfg["label_smoothing"]),
+        metrics=[tf.keras.metrics.SparseCategoricalAccuracy(name="accuracy")],
     )
 
     callbacks = [
@@ -229,13 +277,20 @@ def fit(model, X_tr, y_tr, X_va, y_va, cfg, epochs, verbose=1):
     )
 
 
-def _supports_smoothing() -> bool:
-    """label_smoothing en SparseCategoricalCrossentropy no existe en todas las versiones."""
-    import inspect
-    import tensorflow as tf
-    return "label_smoothing" in inspect.signature(
-        tf.keras.losses.SparseCategoricalCrossentropy.__init__
-    ).parameters
+def _smoothed_loss(num_classes: int, smoothing: float):
+    """
+    Entropía cruzada con label smoothing sobre etiquetas enteras.
+
+    Keras 3 sacó `label_smoothing` de SparseCategoricalCrossentropy y el
+    chequeo que había acá caía en silencio a la pérdida sin suavizar: el modelo
+    salía con probabilidades de 0.999 y 0.001 en el 96% de las fotos. Con eso
+    los umbrales por letra no tienen dónde ubicarse —cualquier valor entre 0.01
+    y 0.99 separa igual— y la calibración terminaba en extremos como 0.99 para
+    la A. Es una clase registrada (src/utils/losses.py) para que el .keras se
+    pueda volver a cargar desde otros scripts.
+    """
+    from src.utils.losses import SmoothedSparseCategoricalCrossentropy
+    return SmoothedSparseCategoricalCrossentropy(num_classes, smoothing)
 
 
 # ─── Reportes ────────────────────────────────────────────────────────────────
@@ -303,9 +358,12 @@ def export_tflite(model, letters, accuracy, cv_summary, n_ensemble):
     exports = MODELS_DIR / "exports"
     exports.mkdir(parents=True, exist_ok=True)
 
-    version = 1
-    while (exports / f"signa_alphabet_v{version}.tflite").exists():
-        version += 1
+    # Una más que la versión más alta que haya, no el primer número libre: si
+    # se borraron versiones viejas, el primer libre puede ser MENOR que la
+    # vigente, y el runner (que carga la más alta) seguiría con la anterior.
+    existentes = [int("".join(c for c in f.stem.split("_v")[-1] if c.isdigit()) or 0)
+                  for f in exports.glob("signa_alphabet_v*.tflite")]
+    version = max(existentes, default=0) + 1
     path = exports / f"signa_alphabet_v{version}.tflite"
 
     tmp = tempfile.mkdtemp()
@@ -325,6 +383,9 @@ def export_tflite(model, letters, accuracy, cv_summary, n_ensemble):
         "labels": {str(i): l for i, l in enumerate(letters)},
         "input_shape": [int(model.input_shape[1])],
         "feature_spec": "src.data.hand_features.build_features (MediaPipe Hands, 258 valores)",
+        # Con qué detectores se extrajo el dataset (build_alphabet_dataset.py).
+        # El runner lo chequea: un modelo de otros detectores no avisa, acierta poco.
+        "detectors": "mediapipe-tasks",
         "model_name": model.name,
     }
     meta_path = path.with_name(path.stem + "_meta.json")
@@ -361,7 +422,8 @@ def cross_validate(X, y, sources, is_aug, letters, cfg, epochs, folds, seed, n_e
         tr_mask[va_idx] = False
 
         model = train_ensemble(X[tr_mask], y[tr_mask], X[va_idx], y[va_idx],
-                               len(letters), cfg, epochs, n_ensemble, verbose=0)
+                               len(letters), cfg, epochs, n_ensemble, verbose=0,
+                               letters=letters)
         acc = float((model.predict(X[test], verbose=0).argmax(1) == y[test]).mean())
         accs.append(acc)
         print(f"  fold {k}: fuentes {sorted(held.tolist())} → {acc:.1%} ({int(test.sum())} fotos)")
@@ -429,7 +491,7 @@ def main():
     print(f"Train: {int(tr.sum())}  |  Val: {int(va.sum())}  |  Test: {int(te.sum())} (fotos reales)")
 
     model = train_ensemble(X[tr], y[tr], X[va], y[va], len(letters), cfg,
-                           epochs, n_ensemble)
+                           epochs, n_ensemble, letters=letters)
 
     header = [
         f"Split: {split_mode}",

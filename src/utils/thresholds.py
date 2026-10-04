@@ -64,3 +64,24 @@ def pick_threshold(p_letter, is_letter, min_precision, min_recall):
         return best
 
     return max(scored, key=lambda c: c[0])
+
+
+def center_threshold(p_letter, threshold):
+    """
+    Corre el umbral al medio del hueco donde cayó, sin cambiar ninguna decisión.
+
+    `pick_threshold` devuelve un umbral que coincide con el puntaje de alguna
+    foto: el de la última positiva que todavía acepta. Cualquier valor entre el
+    puntaje de abajo más cercano y ese separa las fotos de calibración
+    exactamente igual, pero quedarse en el borde no deja margen: en vivo las
+    probabilidades salen promediadas entre frames y un poco más bajas que en una
+    foto limpia. Con la A pasó eso: 15 fotos casi iguales, umbral 0.81 pegado a
+    la A más floja, y una A de frente o a otra altura no llegaba nunca. El medio
+    del hueco reparte el margen entre aceptar de menos y aceptar de más.
+    """
+    p = np.asarray(p_letter, dtype=np.float64)
+    below = p[p < threshold]
+    above = p[p >= threshold]
+    if not len(below) or not len(above):
+        return threshold
+    return max(MIN_THRESHOLD, float((below.max() + above.min()) / 2))

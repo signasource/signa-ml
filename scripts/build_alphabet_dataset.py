@@ -231,7 +231,9 @@ def main():
     import mediapipe as mp
 
     rng = np.random.default_rng(args.seed)
-    X, F, y, sources, is_aug = [], [], [], [], []
+    X, F, y, sources, is_aug, mirrored = [], [], [], [], [], []
+    mirror_images = bool(aug_cfg.get("mirror_images", False))
+    mirror_variants = 0 if args.no_augment else int(aug_cfg.get("mirror_variants", variants))
     rows = []
     unparsed, unknown_letter, undetected = [], [], []
 
@@ -266,27 +268,37 @@ def main():
                 f = 1280 / max(img.shape[:2])
                 img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
 
-            for v in range(variants + 1):
-                frame = img if v == 0 else augment_image(img, aug_cfg, rng)
-                got = extract(frame, hands, ex_cfg["mirror_left_to_right"], face)
+            # La cámara de la demo y de la app llega ESPEJADA, y las fotos son
+            # capturas de video sin espejar. MediaPipe no es simétrico: la foto
+            # espejada no da los landmarks espejados, y en letras que se deciden
+            # por milímetros (T/I) eso alcanzaba para cambiar la letra. Así que
+            # cada foto entra también espejada. Cuenta como original
+            # (is_augmented = 0): es una foto real, vista como la ve la cámara.
+            for flip in ((False, True) if mirror_images else (False,)):
+                base = cv2.flip(img, 1) if flip else img
+                n_var = mirror_variants if flip else variants
+                for v in range(n_var + 1):
+                    frame = base if v == 0 else augment_image(base, aug_cfg, rng)
+                    got = extract(frame, hands, ex_cfg["mirror_left_to_right"], face)
 
-                if got is None:
-                    if v == 0:
-                        undetected.append(path.name)
-                        rows.append([path.name, letter, source, 0, "", "", "sin_mano"])
-                        if args.debug_dir:
-                            cv2.imwrite(str(args.debug_dir / path.name), img)
-                    continue
+                    if got is None:
+                        if v == 0 and not flip:
+                            undetected.append(path.name)
+                            rows.append([path.name, letter, source, 0, "", "", "sin_mano"])
+                            if args.debug_dir:
+                                cv2.imwrite(str(args.debug_dir / path.name), img)
+                        continue
 
-                features, cara, label, score = got
-                X.append(features)
-                F.append(cara)
-                y.append(letter_to_id[letter])
-                sources.append(source)
-                is_aug.append(1 if v else 0)
+                    features, cara, label, score = got
+                    X.append(features)
+                    F.append(cara)
+                    y.append(letter_to_id[letter])
+                    sources.append(source)
+                    is_aug.append(1 if v else 0)
+                    mirrored.append(1 if flip else 0)
 
-                if v == 0:
-                    rows.append([path.name, letter, source, 1, label, f"{score:.3f}", "ok"])
+                    if v == 0 and not flip:
+                        rows.append([path.name, letter, source, 1, label, f"{score:.3f}", "ok"])
 
             if n % 25 == 0 or n == len(images):
                 print(f"  {n}/{len(images)} imágenes · {len(X)} muestras")
@@ -300,11 +312,12 @@ def main():
     y = np.array(y, dtype=np.int64)
     sources = np.array(sources, dtype=np.int64)
     is_aug = np.array(is_aug, dtype=np.int8)
+    mirrored = np.array(mirrored, dtype=np.int8)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         args.out,
-        X=X, face=F, y=y, sources=sources, is_augmented=is_aug,
+        X=X, face=F, y=y, sources=sources, is_augmented=is_aug, mirrored=mirrored,
         letters=np.array(letters, dtype=object),
     )
 
@@ -323,7 +336,8 @@ def main():
     if sin_cara:
         print(f"  sin cara detectada en {sin_cara} ({sin_cara / len(F):.0%}): "
               f"ese bloque va en cero y el modelo lo ignora")
-    print(f"  originales: {originals}  |  aumentadas: {X.shape[0] - originals}")
+    print(f"  originales: {originals} (espejadas: {int(((is_aug == 0) & (mirrored == 1)).sum())})"
+          f"  |  aumentadas: {X.shape[0] - originals}")
     print(f"  fuentes distintas: {len(set(sources.tolist()))}")
     print(f"Guardado en: {args.out}")
     print(f"Reporte:     {report_path}")
@@ -331,7 +345,7 @@ def main():
     print("\nMuestras ORIGINALES por letra (las aumentadas son copias, no cuentan):")
     missing = []
     for i, letter in enumerate(letters):
-        n_orig = int(((y == i) & (is_aug == 0)).sum())
+        n_orig = int(((y == i) & (is_aug == 0) & (mirrored == 0)).sum())
         n_src = len(set(sources[(y == i)].tolist()))
         flag = "  ← POCAS" if n_orig < 8 else ""
         if n_orig == 0:

@@ -258,3 +258,69 @@ def build_face_features(landmarks: np.ndarray,
     mano = float(np.linalg.norm(lm[MIDDLE_MCP] - lm[WRIST])) / escala
     out += [mano, 1.0]                      # último valor: flag "hay cara"
     return np.asarray(out, dtype=np.float32)
+
+
+# ─── Aumentación en el espacio de features ───────────────────────────────────
+#
+# Las fotos del dataset muestran cada letra como la hizo esa persona en ese
+# video: la A casi siempre de costado y a la altura del hombro. Con 15 fotos
+# por letra el modelo aprende eso como parte de la letra, y una A de frente o
+# más abajo deja de pasar. Las dos funciones de acá le muestran la misma mano
+# en otras posturas sin tener que volver a correr MediaPipe.
+
+# Bloques que dependen de hacia dónde mira la mano. El resto (canónicas,
+# distancias, ángulos, world canónicas) ya es invariante a la rotación.
+_ORIENTED = slice(0, 63)
+_AXES = slice(126, 135)
+
+
+def rotation_matrix(yaw_deg: float, pitch_deg: float, roll_deg: float = 0.0) -> np.ndarray:
+    """
+    Rotación en ejes de imagen (x derecha, y abajo, z profundidad).
+
+    yaw   gira alrededor del eje vertical: es pasar de mostrar la mano de frente
+          a mostrarla de costado.
+    pitch la inclina hacia la cámara o hacia atrás.
+    roll  la gira en el plano de la imagen (la aumentación de imagen ya cubre
+          ±12°, así que suele ir en cero).
+    """
+    a, b, c = np.radians([yaw_deg, pitch_deg, roll_deg])
+    ry = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
+    rx = np.array([[1, 0, 0], [0, np.cos(b), -np.sin(b)], [0, np.sin(b), np.cos(b)]])
+    rz = np.array([[np.cos(c), -np.sin(c), 0], [np.sin(c), np.cos(c), 0], [0, 0, 1]])
+    return rz @ rx @ ry
+
+
+def rotate_hand_features(features: np.ndarray, R: np.ndarray) -> np.ndarray:
+    """
+    Las features de la misma mano vista girada R.
+
+    Rotar los landmarks y recalcular da exactamente esto: las coordenadas
+    orientadas (bloque A) y los ejes del marco de la mano (bloque C) giran con
+    R, y todo lo que está en el marco propio de la mano no cambia. Acepta un
+    vector o una matriz de filas; las columnas después de las 258 de mano (el
+    bloque de cara) se dejan como están.
+    """
+    out = np.array(features, dtype=np.float32, copy=True)
+    flat = out.reshape(-1, out.shape[-1])
+    n = flat.shape[0]
+    flat[:, _ORIENTED] = (flat[:, _ORIENTED].reshape(n, 21, 3) @ R.T).reshape(n, 63)
+    flat[:, _AXES] = (flat[:, _AXES].reshape(n, 3, 3) @ R.T).reshape(n, 9)
+    return flat.reshape(out.shape)
+
+
+def shift_face_block(face: np.ndarray, dx: float, dy: float, size: float) -> np.ndarray:
+    """
+    El bloque de cara de la misma mano corrida (dx, dy) en unidades de
+    ojos-a-boca y con su tamaño relativo multiplicado por `size` (más cerca o
+    más lejos de la cámara). Un bloque sin cara (flag en 0) se deja igual.
+    """
+    out = np.array(face, dtype=np.float32, copy=True)
+    if out[FACE_PRESENT] != 1.0:
+        return out
+    for i in (FACE_WRIST_X, FACE_INDEX_X, FACE_MIDDLE_X):
+        out[i] += dx
+    for i in (FACE_WRIST_Y, FACE_INDEX_Y, FACE_MIDDLE_Y):
+        out[i] += dy
+    out[FACE_HAND_SIZE] *= size
+    return out

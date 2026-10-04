@@ -41,7 +41,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.train_alphabet import load_dataset, train_ensemble
-from src.utils.thresholds import MIN_THRESHOLD, pick_threshold
+from src.utils.thresholds import MIN_THRESHOLD, center_threshold, pick_threshold
 
 ROOT = Path(__file__).parent.parent
 CONFIG_PATH = ROOT / "configs" / "alphabet_config.yaml"
@@ -72,7 +72,8 @@ def out_of_fold_probs(X, y, sources, is_aug, letters, cfg, epochs, folds, seed, 
         tr_mask[va_idx] = False
 
         model = train_ensemble(X[tr_mask], y[tr_mask], X[va_idx], y[va_idx],
-                               len(letters), cfg, epochs, n_ensemble, verbose=0)
+                               len(letters), cfg, epochs, n_ensemble, verbose=0,
+                               letters=letters)
         probs[test] = model.predict(X[test], verbose=0)
         acc = float((probs[test].argmax(1) == y[test]).mean())
         print(f"  fold {k}: fuentes {sorted(held.tolist())} → id {acc:.1%}")
@@ -93,7 +94,10 @@ def main():
     p.add_argument("--ensemble", type=int, default=None)
     p.add_argument("--min-precision", type=float, default=0.40,
                    help="Precisión mínima por letra: evita umbrales que acepten cualquier cosa")
-    p.add_argument("--min-recall", type=float, default=0.85,
+    # 0.90 y no 0.85: en práctica, que rechace una letra bien hecha molesta más
+    # que aceptar alguna vecina. Medido sobre el v5: recall medio 86.8% → 88.1%
+    # por precisión media 84.7% → 82.5%; la A pasa de umbral 0.86 a 0.82.
+    p.add_argument("--min-recall", type=float, default=0.90,
                    help="Recall objetivo por letra (no se fuerza si rompe la precisión)")
     p.add_argument("--cache", type=Path, default=REPORTS_DIR / "alphabet_oof_probs.npz")
     p.add_argument("--recalibrate", action="store_true",
@@ -143,6 +147,7 @@ def main():
             continue
         f1, thr, precision, recall = pick_threshold(
             P[:, i], is_letter, args.min_precision, args.min_recall)
+        thr = center_threshold(P[:, i], thr)
         thresholds[letter] = round(thr, 3)
         id_acc = float((P[is_letter].argmax(1) == i).mean())
         rows.append((letter, thr, recall, precision, f1, id_acc, int(is_letter.sum())))

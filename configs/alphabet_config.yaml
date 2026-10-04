@@ -63,6 +63,11 @@ extraction:
     contrast: [0.8, 1.2]
     blur_prob: 0.25             # simula webcam fuera de foco
     jpeg_prob: 0.25             # simula compresión de webcam
+    # Cada foto entra también espejada (+ sus variantes): la cámara de la demo y
+    # de la app llega espejada, y MediaPipe no da lo mismo sobre una imagen y su
+    # espejo. Ver build_alphabet_dataset.py.
+    mirror_images: true
+    mirror_variants: 3
 
 # Entrenamiento
 training:
@@ -85,6 +90,22 @@ training:
   hidden_units: [512, 256, 128]
   # Aumentación a NIVEL LANDMARK (en cada batch, sobre las features ya extraídas)
   landmark_noise_std: 0.012
+  # Aumentación de POSTURA (scripts/train_alphabet.py · augment_postures): copias
+  # de cada muestra con la mano girada y corrida de altura, para que la forma de
+  # la mano decida la letra y no cómo la hizo cada persona en su video. Medido
+  # por CV agrupada sobre fotos apartadas: la A pasaba de 87% a 33-53% girada
+  # 80° o a la altura del pecho; con esto queda en 87% en todos los casos, sin
+  # bajar la identificación limpia (82.5% → 82.7%).
+  posture_augment:
+    copies: 3
+    location_letters: [T, I]    # se distinguen por la altura: su posición no se toca
+    shift_x: 2.0                # ± corrimiento, en unidades de ojos-a-boca
+    shift_y: 2.5
+    size: [0.75, 1.35]          # más cerca / más lejos de la cámara
+    yaw_deg: 45                 # ± giro alrededor del eje vertical
+    pitch_deg: 20
+    yaw_deg_by_letter:
+      A: 90                     # la A se hace tanto de frente como de costado
   min_hand_score: 0.5           # descarta detecciones por debajo de este score
 
 # Inferencia en vivo
