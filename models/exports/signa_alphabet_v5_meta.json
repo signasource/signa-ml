@@ -1,0 +1,53 @@
+{
+  "version": 5,
+  "kind": "static_alphabet",
+  "accuracy": 0.7961,
+  "cv": {
+    "folds": 5,
+    "mean": 0.8296,
+    "std": 0.0375,
+    "per_fold": [
+      0.789,
+      0.889,
+      0.855,
+      0.818,
+      0.797
+    ],
+    "nota": "leave-sources-out sobre fotos originales y espejadas, ensemble de 5"
+  },
+  "ensemble": 5,
+  "labels": {
+    "0": "A",
+    "1": "B",
+    "2": "C",
+    "3": "D",
+    "4": "E",
+    "5": "F",
+    "6": "G",
+    "7": "H",
+    "8": "I",
+    "9": "J",
+    "10": "K",
+    "11": "L",
+    "12": "M",
+    "13": "N",
+    "14": "Ñ",
+    "15": "O",
+    "16": "P",
+    "17": "Q",
+    "18": "R",
+    "19": "S",
+    "20": "T",
+    "21": "U",
+    "22": "V",
+    "23": "W",
+    "24": "X",
+    "25": "Y"
+  },
+  "input_shape": [
+    514
+  ],
+  "feature_spec": "src.data.hand_features.build_features (MediaPipe Hands, 258 valores)",
+  "detectors": "mediapipe-tasks",
+  "model_name": "signa_alphabet_ensemble"
+}
