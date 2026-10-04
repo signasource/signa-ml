@@ -1,64 +1,68 @@
 # Demo de reconocimiento — cómo levantarla y grabarla
 
-Tres escenas, hechas a partir de los prototipos de Claude Design, corriendo con
-los modelos reales del repo.
+Una home y dos ejercicios, hechos a partir de los prototipos de Claude Design,
+corriendo con **los mismos modelos, detectores y umbrales que la app nativa**.
 
-| escena | archivo | modelo | qué hace |
+| pantalla | archivo | modelo | qué hace |
 |---|---|---|---|
-| Deletreá tu nombre | `nombre.html` | `signa_alphabet_v1.tflite` (abecedario) | escribís tu nombre y te hace señar letra por letra |
-| Práctica libre · Familia | `familia.html` | `signa_model_v3.tflite` (LSTM dinámico) | reconoce señas con movimiento: papá, mamá, hermanos, casa |
-| Reconocimiento simple | `simple.html` | `signa_alphabet_v1.tflite` | identifica letras sueltas, sin pedir ninguna en particular |
+| Menú | `index.html` (`/`) | — | elegís el ejercicio; todo vuelve acá |
+| Deletreá tu nombre | `nombre.html` | `signa_alphabet_v5.tflite` (abecedario) | escribís tu nombre y te hace señar letra por letra |
+| Señas con movimiento | `familia.html` | `signa_model_v9.tflite` (LSTM dinámico) | papá, mamá, hermano, amigo |
+| Reconocimiento simple | `simple.html` | el del abecedario | identifica letras sueltas (no está en el menú) |
+
+El flujo es cerrado, pensado para la feria: desde la home se entra a un
+ejercicio, la flecha de atrás o `Esc` vuelven al menú, y al terminar un
+ejercicio la pantalla final ofrece «Volver al menú» o repetirlo.
 
 ---
 
-## Levantarlas
-
-Un solo comando levanta el servidor y las tres escenas.
+## Levantarla
 
 ```bash
 cd ~/Repos/signa/signa-ml
 source .venv/bin/activate
-
-# con los dos modelos (abecedario + señas dinámicas)
 python demo/server.py --signs
 ```
 
-Vas a ver algo así:
+y abrí **http://localhost:8000/**. Vas a ver algo así:
 
 ```
 Cargando modelo…
-  signa_alphabet_v1.tflite · test 81.6%
+  signa_alphabet_v5.tflite · test 79.6%
   letras: A B C D E F G H I J K L M N Ñ O P Q R S T U V W X Y
   umbrales calibrados por letra · más permisivos: …
 
 Cargando modelo de señas dinámicas…
-  signa_model_v3.tflite · test 97.6%
-  señas: gracias hermanos reposo casa nombre estudiar entender repetir gato papa mama computadora lengua_de_senas
+  signa_model_v9.tflite · test 96.9%
+  señas: hermano reposo amigo papa mama
+  umbrales: hermano 0.78, amigo 0.86, papa 0.41, mama 0.61
 
+  Menú     →  http://localhost:8000/
   Nombre   →  http://localhost:8000/nombre.html
-  Simple   →  http://localhost:8000/simple.html
   Familia  →  http://localhost:8000/familia.html
 ```
 
-Abrí esas URLs en el navegador y dale permiso de cámara. **Tiene que ser
-`localhost`** — los navegadores no dan acceso a la cámara en `http://` salvo en
-localhost.
+Dale permiso de cámara. **Tiene que ser `localhost`** — los navegadores no dan
+acceso a la cámara en `http://` salvo en localhost.
 
-Si sólo vas a usar el abecedario, `python demo/server.py` (sin `--signs`) arranca
-más rápido y no carga el modelo pesado.
+Sin `--signs` arranca más rápido, pero la opción de señas con movimiento queda
+deshabilitada en el menú.
+
+Los detectores de MediaPipe se leen de `../signa-mobile/assets/mediapipe/`
+(`hand_landmarker.task`, `pose_landmarker.task`): hace falta tener clonado
+signa-mobile al lado, o pasar la carpeta con `--mediapipe-dir`.
 
 Opciones útiles:
 
 ```bash
 python demo/server.py --signs --port 8800        # otro puerto
-python demo/server.py --threshold 0.65           # abecedario más permisivo
-python demo/server.py --signs --sign-threshold 0.75   # señas más permisivas
+python demo/server.py --signs --mediapipe-dir <carpeta con los .task>
 ```
 
 Opciones por URL:
 
 - `nombre.html?celebration=fiesta` — final con confeti en vez de "lección completa"
-- `familia.html?signs=papa,mama,casa,gracias` — qué señas mostrar
+- `familia.html?signs=papa,mama` — practicar sólo algunas señas
 - `simple.html?signs=A,B,L,O,V,Y` — qué letras mostrar
 
 ---
@@ -67,8 +71,8 @@ Opciones por URL:
 
 ```
 navegador  ──JPEG (POST /predict o /predict_sign)──▶  demo/server.py
-            ◀──{letra o seña, confianza, landmarks}──   ├─ MediaPipe Hands + abecedario
-                                                        └─ MediaPipe Holistic + LSTM
+            ◀──{letra o seña, confianza, landmarks}──   ├─ HandLandmarker + PoseLandmarker + abecedario
+                                                        └─ HandLandmarker + PoseLandmarker + LSTM
 ```
 
 El navegador se queda con la cámara, el diseño y las animaciones; Python se queda
@@ -76,6 +80,26 @@ con los modelos. El servidor usa los mismos runners que los scripts de consola
 (`src/inference/alphabet_runner.py` y `sign_runner.py`), así que lo que se ve en
 el video sale del mismo código que produjo los números que reportamos — no hay
 features reimplementadas en JavaScript que puedan desincronizarse.
+
+**El abecedario usa los mismos detectores que la app.** `HandLandmarker` y
+`PoseLandmarker` de MediaPipe Tasks, con los `.task` de
+`signa-mobile/assets/mediapipe`, que son también con los que se armó el dataset.
+La cara (para la posición de la mano) sale de la pose, igual que en el teléfono.
+Si esos archivos están en otro lado: `--mediapipe-dir <carpeta>`. Antes la demo
+usaba las soluciones legacy de MediaPipe y un modelo entrenado con ellas: lo que
+se veía acá no era lo que veía la app.
+
+**Las señas dinámicas siguen paso por paso a la app** (`Ventana.kt`,
+`Reconocedor.kt`, `Confirmador.kt`): mismos detectores, ventana de 2,5 s
+remuestreada por tiempo a 30 pasos, cuadros sin manos afuera, pose anulada
+antes del modelo, verificación contra las señas que muestra la pantalla con el
+umbral calibrado de cada una, piso de movimiento y confirmación por el 60% de
+los últimos 700 ms. Antes la demo usaba Holistic legacy, un umbral único de
+0.85 y rachas de frames: el v9 recibía otra cosa que en el teléfono.
+
+**Sólo se reconoce lo que se ve en el viewport.** La cámara capta más de lo que
+muestra el recuadro (el video está con `object-fit: cover`); lo que queda fuera
+de cuadro se manda en negro, así una mano al costado no dispara nada.
 
 No agrega dependencias: `http.server` de la stdlib alcanza en localhost.
 
@@ -101,17 +125,26 @@ Un umbral por letra, y no uno solo para todas, porque las letras no tienen la
 misma confianza típica: la Y sale con 99% y la Q con 40%. Con un umbral único, o
 la Y acepta cualquier cosa o la Q no se acepta nunca. Los resultados quedan en
 `reports/alphabet_thresholds.txt` y los umbrales en
-`models/exports/signa_alphabet_v1_thresholds.json`, que el runner carga solo.
+`models/exports/signa_alphabet_v5_thresholds.json`, que el runner carga solo.
 
-Resultado sobre fotos de señantes que el modelo nunca vio:
+Resultado del v5 sobre fotos de señantes que el modelo nunca vio, **en las dos
+orientaciones** (la foto original y espejada, que es como llega la cámara):
 
 |  | identificación (26 clases) | verificación (por letra) |
 |---|---|---|
-| media | 82.9% | 89% |
-| **peor letra** | 50% (Ñ) | **70% (Ñ)** |
-| letras por debajo de 70% | 6 | **ninguna** |
+| media | 83.0% | 88.1% |
+| **peor letra** | 23% (Q) | **61% (I)** |
+| letras por debajo de 70% | 3 (I, P, Q) | **2 (I, Q)** |
 
-Ese "ninguna" es lo que hace que no haya que evitar ninguna letra.
+La Q se hace con dos manos y el reconocedor mira una. La I comparte la forma de
+la mano con la T y sólo se distingue por la altura: en vivo la separa la regla
+de ubicación del runner (`LOCATION_PAIRS`), que estos números no incluyen.
+
+Estos números no se comparan uno a uno con los de versiones anteriores: aquellos
+se medían sólo sobre las fotos sin espejar, que son más fáciles. La comparación
+justa —mismas fotos, mismos folds— está en el informe del v5: con las fotos
+espejadas en el entrenamiento, la verificación sobre imagen espejada sube de
+83.2% a 87.8% y la T de 40% a 73%.
 
 Hay un piso duro de 0.08 en los umbrales, a propósito: un umbral cerca de cero
 aceptaría cualquier mano y la práctica sería un placebo — la app diría
@@ -142,9 +175,14 @@ re-corré el pipeline.
 
 ---
 
-## La seña en 3D y el toggle de trackeo (`nombre.html`)
+## La seña en 3D y el toggle de trackeo (`nombre.html` y `familia.html`)
 
-Dentro del viewport hay dos controles nuevos:
+Las dos escenas son la misma pantalla —`familia.html` está armada sobre
+`nombre.html`— y sólo cambia qué se reconoce: una letra por vez o una seña
+por vez. En las señas, la barra blanca del borde inferior del viewport muestra
+cómo se llena la ventana de 2,5 s antes de poder decidir.
+
+Dentro del viewport hay dos controles:
 
 - **Toggle «Trackeo»** (abajo a la izquierda) — enciende y apaga el dibujo de
   los landmarks sobre la mano. El reconocimiento sigue corriendo igual: sólo se
@@ -234,9 +272,9 @@ se ajusta `SignAnimations.MEANING_TEMPLATES` en `demo/server.py`.
 | `H` | mostrar/ocultar el panel de control — **ocultalo antes de grabar** |
 | `L` | mostrar/ocultar los landmarks (igual que el toggle «Trackeo») |
 | `R` | reiniciar la escena |
-| `espacio` | Nombre: dar por acertada la letra actual · Simple y Familia: play/pausa |
-| letra | `nombre.html` / `simple.html`: forzar esa detección |
-| `1`–`9` | `familia.html`: forzar la seña n-ésima de la lista |
+| `Esc` | volver al menú |
+| `espacio` | Nombre y Familia: dar por acertada la letra/seña actual · Simple: play/pausa |
+| letra | `nombre.html`: si es la pedida, darla por acertada · `simple.html`: forzar esa detección |
 
 Las teclas de forzado son la red de seguridad: si en la toma algo no coopera,
 completás a mano sin cortar la grabación. El panel de control muestra el top-3
@@ -249,13 +287,17 @@ inferencia — sirve para ensayar, y se oculta con `H`.
 
 - **Luz pareja y fondo liso.** MediaPipe pierde la mano con contraluz.
 - **Mano completa en cuadro**, sin que se corte la muñeca.
-- **En `familia.html` necesitás torso y brazos**, no sólo la mano: el modelo
-  dinámico usa Holistic. Alejate un poco de la cámara.
-- **Las señas dinámicas necesitan 30 frames** antes de poder decidir. La barrita
-  blanca abajo del video muestra cómo se llena el buffer; esperá a que esté
-  completa antes de señar. Después de cada acierto se vacía a propósito, para
-  que la seña anterior no se vuelva a disparar sola.
+- **En `familia.html` necesitás torso y manos en cuadro**: los hombros son la
+  referencia con la que se normaliza la seña. Alejate un poco de la cámara.
+- **Las señas dinámicas miran los últimos 2,5 s.** La barrita blanca abajo del
+  video muestra cuánto de esa ventana ya está lleno (los cuadros sin manos no
+  cuentan); esperá a que esté completa antes de señar. Una seña se confirma
+  cuando pasa su umbral la mayor parte de 700 ms, y hace falta movimiento: una
+  mano quieta no dispara nada. Es exactamente la lógica de la app.
 - **Volvé a reposo entre seña y seña.** El modelo tiene una clase `reposo` y la
   usa para saber que terminaste una y empieza otra.
 - Grabá con el navegador en pantalla completa: la escena mide 390×844 y ya trae
-  el marco de teléfono con sombra, así que queda bien tal cual.
+  el marco de teléfono con sombra. Se escala sola para ocupar el alto de la
+  ventana, así que entra igual en la notebook que en un monitor de 1080.
+- En `nombre.html` sólo cuenta la letra pedida: si mientras armás la Ñ el
+  modelo pasa por una B, no se marca nada en rojo.

@@ -45,6 +45,9 @@ export class FrameSender {
     // La escena puede pedir una letra concreta: con eso el servidor pasa a
     // modo verificación ("¿esto es una A?") en vez de identificación.
     this.target = null;
+    // Con el reconocimiento en pausa se siguen mandando frames, pero sólo para
+    // dibujar el esqueleto: el servidor no clasifica ni acumula nada.
+    this.trackOnly = false;
     this.canvas = document.createElement("canvas");
     this.running = false;
     this.fps = 0;
@@ -63,9 +66,9 @@ export class FrameSender {
       const blob = await this._grab();
       if (!blob) { await new Promise((r) => setTimeout(r, 60)); continue; }
       try {
-        const url = this.target
-          ? `${this.endpoint}?target=${encodeURIComponent(this.target)}`
-          : this.endpoint;
+        const q = this.trackOnly ? "track=1"
+          : this.target ? `target=${encodeURIComponent(this.target)}` : "";
+        const url = q ? `${this.endpoint}?${q}` : this.endpoint;
         const res = await fetch(url, { method: "POST", body: blob });
         const data = await res.json();
         const now = performance.now();
@@ -93,8 +96,36 @@ export class FrameSender {
     ctx.scale(-1, 1);
     ctx.drawImage(v, 0, 0, w, h);
     ctx.restore();
+
+    // Sólo se reconoce lo que se ve. El <video> está con object-fit:cover, así
+    // que la cámara capta más de lo que muestra el viewport, y MediaPipe
+    // agarraba manos que estaban fuera de cuadro (alguien al lado, la otra mano
+    // en el borde). Lo que queda afuera se pinta de negro en vez de recortarlo:
+    // el frame conserva su tamaño, así que los landmarks siguen viniendo en
+    // coordenadas del video entero y el dibujo y los modelos no cambian.
+    const vis = visibleRegion(v);
+    if (vis) {
+      const x0 = vis.x * w, y0 = vis.y * h, x1 = x0 + vis.w * w, y1 = y0 + vis.h * h;
+      ctx.fillStyle = "#000";
+      if (x0 > 0) { ctx.fillRect(0, 0, Math.ceil(x0), h); ctx.fillRect(Math.floor(x1), 0, w, h); }
+      if (y0 > 0) { ctx.fillRect(0, 0, w, Math.ceil(y0)); ctx.fillRect(0, Math.floor(y1), w, h); }
+    }
     return new Promise((r) => this.canvas.toBlob(r, "image/jpeg", this.quality));
   }
+}
+
+/*
+ * Qué parte del frame de la cámara se ve en el <video> con object-fit:cover,
+ * en fracciones del frame. El recorte de cover es centrado, así que da igual
+ * que el video esté espejado. null si el elemento todavía no tiene tamaño.
+ */
+export function visibleRegion(video) {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const cw = video.clientWidth, ch = video.clientHeight;
+  if (!vw || !vh || !cw || !ch) return null;
+  const scale = Math.max(cw / vw, ch / vh);
+  const w = Math.min(1, cw / scale / vw), h = Math.min(1, ch / scale / vh);
+  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
 }
 
 /* ── Dibujo de landmarks ───────────────────────────────────────────────── */
@@ -174,6 +205,54 @@ export class LandmarkRenderer {
     });
   };
 }
+
+/* ── Tamaño del teléfono en pantalla ───────────────────────────────────── */
+
+/*
+ * La escena mide 390×844, como el prototipo, y se escala entera para ocupar el
+ * alto de la ventana. Sin esto en la notebook (810 px lógicos) no entraba, y en
+ * un monitor de 1080 quedaba chica con mucho fondo alrededor. Se escala con
+ * transform y no cambiando medidas: el layout interno queda idéntico al
+ * diseño, sólo se ve más grande o más chico.
+ */
+const PHONE_W = 390, PHONE_H = 844, PHONE_MARGIN = 0.035;
+let phoneScaleValue = 1;
+
+export function phoneScale() { return phoneScaleValue; }
+
+function fitPhone() {
+  const phone = document.getElementById("phone");
+  if (!phone) return;
+  const m = Math.round(window.innerHeight * PHONE_MARGIN);
+  phoneScaleValue = Math.min((window.innerHeight - 2 * m) / PHONE_H,
+                             (window.innerWidth - 2 * m) / PHONE_W);
+  phone.style.transform = `scale(${phoneScaleValue})`;
+}
+
+window.addEventListener("resize", fitPhone);
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", fitPhone);
+else fitPhone();
+
+/* ── Navegación: el menú es la home y todo vuelve a él ─────────────────── */
+
+/*
+ * Flujo cerrado para la feria: desde cualquier escena se vuelve al menú con
+ * la flecha de atrás, con cualquier elemento .to-menu o con Esc. Cambiar de
+ * página apaga la cámara sola, así que no hay que limpiar nada a mano.
+ */
+export function goHome() { location.href = "/"; }
+
+function wireMenu() {
+  document.querySelectorAll(".back, .to-menu").forEach((el) => {
+    el.style.cursor = "pointer";
+    el.addEventListener("click", goHome);
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && location.pathname !== "/" && !location.pathname.endsWith("index.html")) goHome();
+  });
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wireMenu);
+else wireMenu();
 
 /* ── Utilidades de DOM ─────────────────────────────────────────────────── */
 
@@ -315,7 +394,8 @@ export class PoseRenderer {
 
 /* Etiquetas lindas para las clases del modelo dinámico (que vienen sin tildes). */
 export const SIGN_LABELS = {
-  papa: "Papá", mama: "Mamá", hermanos: "Hermanos", casa: "Casa",
+  papa: "Papá", mama: "Mamá", hermano: "Hermano", hermanos: "Hermanos", amigo: "Amigo",
+  casa: "Casa",
   gracias: "Gracias", nombre: "Nombre", estudiar: "Estudiar",
   entender: "Entender", repetir: "Repetir", gato: "Gato",
   computadora: "Computadora", lengua_de_senas: "Lengua de señas",

@@ -2,14 +2,17 @@
 Servidor local de la demo: sirve las escenas y corre la inferencia real.
 
 Arquitectura:
-    navegador  ──JPEG (POST /predict)──▶  este servidor  ──▶ MediaPipe Hands
+    navegador  ──JPEG (POST /predict)──▶  este servidor  ──▶ HandLandmarker + PoseLandmarker
                 ◀──JSON {letra, confianza, landmarks}──         + signa_alphabet.tflite
 
 El navegador se queda con la cámara, el render y las animaciones (el diseño de
 los prototipos es HTML, así que se conserva tal cual); Python se queda con el
-modelo. Así la demo usa EXACTAMENTE el mismo código de inferencia que
-scripts/predict_alphabet_realtime.py — el número que reportamos y el que se ve
-en el video vienen del mismo lugar, sin reimplementar features en JS.
+modelo. Los detectores son los mismos .task que corre la app y con los que se
+armó el dataset, y el modelo es el mismo que se exporta al teléfono: lo que se
+mejora acá se ve igual allá.
+
+El navegador sólo manda lo que se ve en el viewport: lo que el object-fit:cover
+deja fuera de cuadro llega en negro (signa.js · FrameSender).
 
 Sin dependencias nuevas: http.server de la stdlib alcanza y sobra en localhost
 (MediaPipe + TFLite tardan ~20 ms; el HTTP local, menos de 1 ms).
@@ -29,7 +32,6 @@ import argparse
 import json
 import os
 import sys
-import os
 import tempfile
 import threading
 import time
@@ -38,6 +40,14 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+# MediaPipe Tasks y TF imprimen avisos al cargar (feedback manager, protobuf
+# deprecado, CUDA ausente) que no afectan en nada y tapan lo que sí importa de
+# la consola. Tiene que ir antes de importarlos.
+os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+import warnings  # noqa: E402
+warnings.filterwarnings("ignore", message=r"SymbolDatabase\.GetPrototype\(\) is deprecated")
 
 import cv2
 import numpy as np
@@ -345,7 +355,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # El navegador cortó antes de recibir la respuesta: se recargó la
+            # página o se cambió de escena con un /predict en vuelo. No es un
+            # error del servidor; se cierra la conexión y listo.
+            self.close_connection = True
 
     def _json(self, payload: dict, code: int = 200):
         self._send(code, json.dumps(payload).encode("utf-8"), CONTENT_TYPES[".json"])
@@ -355,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/":
-            path = "/simple.html"
+            path = "/index.html"
 
         if path == "/meta":
             rec = _recognizer
@@ -380,6 +396,7 @@ class Handler(BaseHTTPRequestHandler):
                     "model": _signs.model_path.name,
                     "accuracy": _signs.meta.get("accuracy"),
                     "sequence_length": _signs.sequence_length,
+                    "thresholds": _signs.thresholds,
                 }
             return self._json(payload)
 
@@ -429,13 +446,38 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "no se pudo decodificar el frame"}, 400)
 
         t0 = time.perf_counter()
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+
+        # Reconocimiento en pausa: sólo los landmarks, para seguir dibujando el
+        # esqueleto. No se clasifica ni se toca el estado de los reconocedores.
+        if (query.get("track") or [""])[0] == "1":
+            h, w = frame.shape[:2]
+            if path == "/predict_sign":
+                if _signs is None:
+                    return self._json({"error": "señas dinámicas no habilitadas"}, 409)
+                with _lock:
+                    pose_px, hands_px, body = _signs.track(frame)
+                return self._json({"tracking_only": True, "body": body, "pose": pose_px,
+                                   "hands": hands_px, "progress": 0, "confirmed": False,
+                                   "infer_ms": round((time.perf_counter() - t0) * 1000, 1)})
+            with _lock:
+                px = _recognizer.track(frame)
+            landmarks = None if px is None else [[round(float(x) / w, 5), round(float(y) / h, 5)]
+                                                 for x, y in px]
+            return self._json({"tracking_only": True, "hand": px is not None, "landmarks": landmarks,
+                               "confirmed": False,
+                               "infer_ms": round((time.perf_counter() - t0) * 1000, 1)})
 
         if path == "/predict_sign":
             if _signs is None:
                 return self._json({"error": "señas dinámicas no habilitadas "
                                             "(levantá el servidor con --signs)"}, 409)
+            # Las señas que muestra la escena: la app verifica contra las pedidas
+            # en vez de identificar entre todas, y acá se hace lo mismo.
+            targets = [s.strip().lower() for s in (query.get("target") or [""])[0].split(",")
+                       if s.strip()] or None
             with _lock:
-                sr = _signs.process(frame)
+                sr = _signs.process(frame, targets=targets)
                 sign_labels = _signs.labels
             elapsed = (time.perf_counter() - t0) * 1000
             _stats["frames"] += 1
@@ -505,6 +547,43 @@ class Handler(BaseHTTPRequestHandler):
         })
 
 
+class _quiet_native_logs:
+    """
+    Calla el stderr a nivel de descriptor mientras se cargan los detectores.
+
+    MediaPipe imprime desde C++ (antes de inicializar su propio log, así que
+    GLOG_minloglevel no lo frena) una tanda de avisos inofensivos por cada
+    detector: EGL, XNNPACK, "Feedback manager requires a model with a single
+    signature". Los errores de Python se siguen viendo: la excepción sale
+    después de restaurar el descriptor.
+    """
+
+    def __enter__(self):
+        sys.stderr.flush()
+        self._saved = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        os.close(devnull)
+
+    def __exit__(self, *exc):
+        os.dup2(self._saved, 2)
+        os.close(self._saved)
+        return False
+
+
+class Server(ThreadingHTTPServer):
+    # Los hilos de cada request no frenan el Ctrl+C.
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # Una desconexión del navegador a mitad de camino (también al leer el
+        # frame) es parte del uso normal; el traceback sólo ensucia la consola.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     global _recognizer, _signs
 
@@ -519,10 +598,12 @@ def main():
     p.add_argument("--threshold", type=float, default=inf["threshold"])
     p.add_argument("--confirm-frames", type=int, default=inf["confirm_frames"])
     p.add_argument("--smoothing", type=int, default=inf["smoothing_window"])
+    p.add_argument("--mediapipe-dir", type=Path, default=None,
+                   help="Carpeta con hand_landmarker.task y pose_landmarker.task "
+                        "(default: los de signa-mobile/assets/mediapipe, los de la app)")
     p.add_argument("--signs", action="store_true",
                    help="Cargar también el modelo de señas dinámicas (para familia.html)")
     p.add_argument("--sign-model", type=Path, default=None)
-    p.add_argument("--sign-threshold", type=float, default=0.85)
     p.add_argument("--api-url", default="http://161.35.105.45",
                    help="signa-api, para las animaciones 3D. Vacío para desactivarlo.")
     p.add_argument("--api-token", default=os.environ.get("SIGNA_API_TOKEN"),
@@ -538,12 +619,14 @@ def main():
                                  args.api_user, args.api_password)
 
     print("Cargando modelo…")
-    _recognizer = AlphabetRecognizer(
-        model_path=args.model,
-        threshold=args.threshold,
-        confirm_frames=args.confirm_frames,
-        smoothing_window=args.smoothing,
-    )
+    with _quiet_native_logs():
+        _recognizer = AlphabetRecognizer(
+            model_path=args.model,
+            threshold=args.threshold,
+            confirm_frames=args.confirm_frames,
+            smoothing_window=args.smoothing,
+            mediapipe_dir=args.mediapipe_dir,
+        )
     acc = _recognizer.meta.get("accuracy")
     print(f"  {_recognizer.model_path.name}"
           + (f" · test {acc:.1%}" if acc is not None else ""))
@@ -574,13 +657,16 @@ def main():
 
     if args.signs:
         print("\nCargando modelo de señas dinámicas…")
-        _signs = SignRecognizer(model_path=args.sign_model, threshold=args.sign_threshold)
+        with _quiet_native_logs():
+            _signs = SignRecognizer(model_path=args.sign_model, mediapipe_dir=args.mediapipe_dir)
         sacc = _signs.meta.get("accuracy")
         print(f"  {_signs.model_path.name}" + (f" · test {sacc:.1%}" if sacc else ""))
         print(f"  señas: {' '.join(_signs.labels)}")
+        if _signs.thresholds:
+            print("  umbrales: " + ", ".join(f"{k} {v:.2f}" for k, v in _signs.thresholds.items()))
     print()
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = Server((args.host, args.port), Handler)
     if args.host not in ("127.0.0.1", "localhost"):
         import socket
         s_tmp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -593,6 +679,7 @@ def main():
             s_tmp.close()
         print(f"  Para la app del celular:  EXPO_PUBLIC_ML_URL=http://{lan}:{args.port}")
 
+    print(f"  Menú     →  http://localhost:{args.port}/")
     print(f"  Nombre   →  http://localhost:{args.port}/nombre.html")
     # El paquete que se comparte lleva sólo nombre.html: no anunciar lo que no está.
     if (STATIC_DIR / "simple.html").is_file():

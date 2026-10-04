@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signa · Práctica</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="common.css">
+<style>
+  .menu { padding: 26px 22px 22px; gap: 0; }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    font: 800 22px/1 'Bricolage Grotesque', sans-serif; letter-spacing: -.6px; color: var(--violet);
+  }
+  .brand i {
+    width: 34px; height: 34px; border-radius: 11px; background: var(--violet);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .menu h1 {
+    margin: 30px 0 8px; font: 700 31px/1.1 'Bricolage Grotesque', sans-serif;
+    letter-spacing: -1.1px; color: var(--ink);
+  }
+  .menu > p { margin: 0 0 26px; font: 400 15px/1.47 Figtree, sans-serif; color: var(--muted); }
+
+  .option {
+    display: flex; align-items: center; gap: 16px; padding: 18px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 22px;
+    cursor: pointer; text-decoration: none; color: inherit;
+    box-shadow: 0 6px 18px rgba(36, 26, 22, .05);
+    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+    animation: sgRise .5s cubic-bezier(.34, 1.2, .5, 1) both;
+  }
+  .option + .option { margin-top: 12px; animation-delay: .08s; }
+  .option:hover { transform: translateY(-2px); border-color: var(--violet); box-shadow: 0 10px 24px rgba(120, 87, 255, .14); }
+  .option:active { transform: scale(.985); }
+  .option[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+  .option .ico {
+    width: 58px; height: 58px; border-radius: 18px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .option b { display: block; font: 700 18px/1.2 'Bricolage Grotesque', sans-serif; letter-spacing: -.3px; }
+  .option small { display: block; margin-top: 4px; font: 400 13px/1.4 Figtree, sans-serif; color: var(--muted); }
+  .option .go { margin-left: auto; flex: none; }
+  .option kbd {
+    font: 600 11px/1 Figtree, sans-serif; color: var(--faint);
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px;
+  }
+  .menu .spacer { flex: 1; }
+  .menu .note { font: 400 12.5px/1.45 Figtree, sans-serif; color: var(--faint); text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="phone">
+  <div class="status-bar"><span>9:41</span><span class="battery"></span></div>
+
+  <div class="screen menu">
+    <div class="brand">
+      <i><svg width="20" height="20" viewBox="0 0 24 24" fill="#F5F0FF"><path d="M7 3a1.5 1.5 0 013 0v7h1V2a1.5 1.5 0 013 0v8h1V4a1.5 1.5 0 013 0v9a8 8 0 01-8 8 6 6 0 01-6-6V8a1.5 1.5 0 013 0v3h1V3z"/></svg></i>
+      Signa
+    </div>
+
+    <h1>¿Qué querés practicar?</h1>
+    <p>Lengua de señas argentina, con la cámara reconociendo lo que hacés.</p>
+
+    <a class="option" href="nombre.html" id="optNombre">
+      <div class="ico" style="background:var(--violet-soft)">
+        <span style="font:800 26px/1 'Bricolage Grotesque',sans-serif;color:var(--violet)">Aa</span>
+      </div>
+      <div>
+        <b>Deletreá tu nombre</b>
+        <small>Letra por letra, con el alfabeto de la LSA</small>
+      </div>
+    </a>
+
+    <a class="option" href="familia.html" id="optFamilia">
+      <div class="ico" style="background:var(--green-soft)">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2E7D45" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="7" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M2.5 20a5.5 5.5 0 0111 0M13.5 20a4 4 0 017.5-2"/></svg>
+      </div>
+      <div>
+        <b>Señas con movimiento</b>
+        <small>Practicá señas dinámicas al azar.</small>
+      </div>
+    </a>
+
+    <div class="spacer"></div>
+    <div class="note">Esc vuelve a este menú desde cualquier ejercicio</div>
+  </div>
+
+  <div class="home-bar"></div>
+</div>
+
+<script type="module">
+import { $, fetchMeta, pretty } from "./signa.js";
+
+const go = (id) => { const el = $(id); if (el.getAttribute("aria-disabled") !== "true") location.href = el.href; };
+window.addEventListener("keydown", (e) => {
+  if (e.key === "1") go("optNombre");
+  if (e.key === "2") go("optFamilia");
+});
+
+// Las señas que se muestran salen del modelo cargado, y si el servidor no
+// levantó el modelo dinámico (--signs) la opción queda deshabilitada.
+const meta = await fetchMeta();
+if (meta && meta.signs) {
+  $("familiaDetail").textContent = meta.signs.labels.filter((s) => s !== "reposo").map(pretty).join(", ");
+} else if (meta) {
+  $("optFamilia").setAttribute("aria-disabled", "true");
+  $("familiaDetail").textContent = "Levantá el servidor con --signs";
+}
+</script>
+</body>
+</html>
