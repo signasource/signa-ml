@@ -10,8 +10,8 @@
 # Ese id es el que se usa para agrupar el split: así el test set nunca comparte
 # señante con el train set y la accuracy reportada es honesta.
 
-# Letras objetivo. "Z" queda afuera: en LSA es dinámica y el Tracker la marca
-# FALSE en las 15 fuentes (no hay fotos). Agregala acá si algún día hay datos.
+# Letras objetivo. La Z es dinámica en LSA: las fotos son del final del trazo y el
+# movimiento lo verifica la demo aparte (TraceTracker en signa-web).
 letters:
   - A
   - B
@@ -39,6 +39,7 @@ letters:
   - W
   - X
   - Y
+  - Z
 
 # Extracción de landmarks con MediaPipe Hands
 extraction:
